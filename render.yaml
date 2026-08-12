@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ssc-guide-app
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEMOTRON_API_KEY
+        sync: false
+      - key: NOTOPEDIA_URL
+        value: https://www.notopedia.com/sarkari-job-exams/SSC-CGL-%3E/Tier-I/5/32/200302/35/142/Tier-I
+      - key: PORT
+        value: 3001
+    healthCheckPath: /api/health

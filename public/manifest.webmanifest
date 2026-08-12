@@ -1,0 +1,67 @@
+{
+  "name": "SSC CGL Guide - Question Bank & Test Creator",
+  "short_name": "SSC Guide",
+  "description": "Complete SSC CGL Tier-I preparation app by Harilal K - question bank, test creator, syllabus tracker, day counter, checklist, and study notes. Works offline on mobile and desktop.",
+  "author": "Harilal K <harilalk.931@gmail.com>",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Question Bank",
+      "short_name": "Questions",
+      "description": "Browse SSC CGL question bank by topic",
+      "url": "/questions",
+      "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Create Test",
+      "short_name": "Test",
+      "description": "Create 25-question 15-minute topic-wise tests",
+      "url": "/test-creator",
+      "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Syllabus Tracker",
+      "short_name": "Syllabus",
+      "description": "Track your topic-wise syllabus progress",
+      "url": "/syllabus",
+      "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Day Counter",
+      "short_name": "Countdown",
+      "description": "Days until SSC CGL exam with milestones",
+      "url": "/day-counter",
+      "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Study Notes",
+      "short_name": "Notes",
+      "description": "Quick revision notes for all subjects",
+      "url": "/guide-notes",
+      "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
+    }
+  ],
+  "screenshots": [],
+  "prefer_related_applications": false,
+  "related_applications": []
+}
