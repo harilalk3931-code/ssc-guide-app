@@ -343,27 +343,50 @@ Return ONLY a valid JSON array in this exact format:
 ]
 `;
 
-  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'nvidia/nemotron-3-ultra',
-      messages: [
-        { role: 'system', content: 'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only.' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 4000,
-      top_p: 0.9,
-    }),
-  });
+  const modelsToTry = [
+    'nvidia/llama-3.1-nemotron-70b-instruct',
+    'nvidia/nemotron-4-340b-instruct',
+    'meta/llama-3.1-70b-instruct',
+  ];
 
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(`Nemotron API error: ${response.status} - ${errorData}`);
+  let response;
+  let lastError = '';
+
+  for (const model of modelsToTry) {
+    try {
+      response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: 'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only.' },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 4000,
+          top_p: 0.9,
+        }),
+      });
+
+      if (response.ok) break;
+      const errText = await response.text();
+      lastError = `${model}: ${response.status} - ${errText}`;
+      if (response.status !== 404 && response.status !== 400) {
+        // If it's auth or quota error (e.g. 401/403/429), don't keep looping models
+        throw new Error(`Nemotron API error (${response.status}): ${errText}`);
+      }
+    } catch (e) {
+      if (e.message.includes('Nemotron API error')) throw e;
+      lastError = e.message;
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Nemotron API error: ${lastError || 'All models failed'}`);
   }
 
   const data = await response.json();
@@ -431,27 +454,49 @@ Answer: ...
 Return only the notes text.
 `;
 
-  const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'nvidia/nemotron-3-ultra',
-      messages: [
-        { role: 'system', content: 'You are an expert SSC CGL exam mentor who writes clear, accurate, detailed study notes.' },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.5,
-      max_tokens: 3000,
-      top_p: 0.9,
-    }),
-  });
+  const modelsToTryNotes = [
+    'nvidia/llama-3.1-nemotron-70b-instruct',
+    'nvidia/nemotron-4-340b-instruct',
+    'meta/llama-3.1-70b-instruct',
+  ];
 
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(`Nemotron API error: ${response.status} - ${errorData}`);
+  let response;
+  let lastError = '';
+
+  for (const model of modelsToTryNotes) {
+    try {
+      response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: 'You are an expert SSC CGL exam mentor who writes clear, accurate, detailed study notes.' },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.5,
+          max_tokens: 3000,
+          top_p: 0.9,
+        }),
+      });
+
+      if (response.ok) break;
+      const errText = await response.text();
+      lastError = `${model}: ${response.status} - ${errText}`;
+      if (response.status !== 404 && response.status !== 400) {
+        throw new Error(`Nemotron API error (${response.status}): ${errText}`);
+      }
+    } catch (e) {
+      if (e.message.includes('Nemotron API error')) throw e;
+      lastError = e.message;
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Nemotron API error: ${lastError || 'All models failed'}`);
   }
 
   const data = await response.json();
