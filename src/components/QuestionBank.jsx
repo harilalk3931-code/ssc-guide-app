@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import Navbar from './Navbar';
+import { generateQuestionsWithAI, fetchSharedBank, AI_PROVIDERS, getProvider } from '../services/api';
 
 const TOPICS = [
   { id: 'all', name: 'All Topics', icon: '📚' },
@@ -36,174 +37,208 @@ const GENERATE_TOPICS = [
 ];
 
 export default function QuestionBank() {
-  const { questions, setQuestions, setQuestionsError, setNotopediaData, setNotopediaLoading, userStats, updateUserStats } = useStore();
+  const { questions, setQuestions, setQuestionsError, userStats, updateUserStats } = useStore();
   const [selectedTopic, setSelectedTopic] = useState('all');
   const [selectedDifficulty, setSelectedDifficulty] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState('card'); // 'card' or 'list'
   const [showAnswer, setShowAnswer] = useState({});
   const [bookmarked, setBookmarked] = useState(new Set());
-  const [loadingNotopedia, setLoadingNotopedia] = useState(false);
-  const [loadingNemotron, setLoadingNemotron] = useState(false);
+  const [loadingAi, setLoadingAi] = useState(false);
   const [genProgress, setGenProgress] = useState(null);
-  const [nemotronConfig, setNemotronConfig] = useState({ category: 'general-awareness', difficulty: 'medium', count: 25 });
-  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [genConfig, setGenConfig] = useState({ category: 'general-awareness', difficulty: 'medium', count: 25 });
+  const [selectedTopics, setSelectedTopics] = useState([]); // multi-topic selection for AI generation
+  const [savedKeys, setSavedKeys] = useState([]);           // [{ id, name, key, provider }]
+  const [activeKeyId, setActiveKeyId] = useState(null);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
+  const [newKeyProvider, setNewKeyProvider] = useState('nemotron');
   const [showApiSettings, setShowApiSettings] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState(null);
+  const [provider, setProvider] = useState('nemotron');
+  const [bankCount, setBankCount] = useState(0);
 
-  // Load Notopedia data on mount if no saved questions exist
+  // Load shared question bank, bookmarks, and saved API keys on mount
   useEffect(() => {
-    if (questions.length === 0) {
-      loadNotopediaData();
-    }
+    loadSharedBank();
     loadBookmarks();
-    const savedKey = localStorage.getItem('nemotron-api-key');
-    if (savedKey) setApiKeyInput(savedKey);
+    loadSavedKeys();
   }, []);
 
-  const loadBookmarks = () => {
-    const saved = localStorage.getItem('ssc-guide-bookmarks');
-    if (saved) {
-      try {
-        setBookmarked(new Set(JSON.parse(saved)));
-      } catch (e) {
-        setBookmarked(new Set());
+  const loadSavedKeys = () => {
+    try {
+      const keys = JSON.parse(localStorage.getItem('ai-keys') || '[]');
+      setSavedKeys(keys);
+      const active = localStorage.getItem('ai-active-key');
+      if (active && keys.some((k) => k.id === active)) {
+        setActiveKeyId(active);
+      } else if (keys.length > 0) {
+        setActiveKeyId(keys[0].id);
+        localStorage.setItem('ai-active-key', keys[0].id);
       }
+    } catch (e) {
+      setSavedKeys([]);
     }
   };
 
-  const toggleBookmark = (questionId) => {
-    setBookmarked((prev) => {
-      const next = new Set(prev);
-      if (next.has(questionId)) {
-        next.delete(questionId);
-      } else {
-        next.add(questionId);
-      }
-      localStorage.setItem('ssc-guide-bookmarks', JSON.stringify([...next]));
-      return next;
-    });
+  const persistKeys = (keys) => {
+    localStorage.setItem('ai-keys', JSON.stringify(keys));
+    setSavedKeys(keys);
   };
 
-  const saveApiKey = () => {
-    const key = apiKeyInput.trim();
+  const toggleTopic = (id) => {
+    setSelectedTopics((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+  };
+
+  const generateTopics = () => {
+    return selectedTopics.length > 0 ? selectedTopics : [genConfig.category];
+  };
+
+  const addApiKey = () => {
+    const key = newKeyValue.trim();
+    const name = newKeyName.trim() || `${getProvider(newKeyProvider).name} Key ${savedKeys.length + 1}`;
     if (!key) {
-      localStorage.removeItem('nemotron-api-key');
-      setApiKeyStatus('API key removed');
+      setApiKeyStatus('⚠️ Enter an API key to save');
+      setTimeout(() => setApiKeyStatus(null), 4000);
       return;
     }
-    localStorage.setItem('nemotron-api-key', key);
-    setApiKeyStatus('API key saved on this device');
+    const entry = { id: crypto.randomUUID(), name, key, provider: newKeyProvider };
+    const keys = [...savedKeys, entry];
+    persistKeys(keys);
+    setActiveKeyId(entry.id);
+    localStorage.setItem('ai-active-key', entry.id);
+    setNewKeyName('');
+    setNewKeyValue('');
+    setApiKeyStatus(`✅ Key "${name}" saved on this device`);
     setTimeout(() => setApiKeyStatus(null), 3000);
   };
 
-  const loadNotopediaData = async () => {
-    setLoadingNotopedia(true);
-    setNotopediaLoading(true);
-    try {
-      const response = await fetch('/api/notopedia/questions');
-      const data = await response.json();
-      if (data.success) {
-        setNotopediaData(data.questions);
-        // Merge: keep existing (generated) questions, add notopedia ones not already present
-        setQuestions((prev) => {
-          const existingKeys = new Set(prev.map((q) => (q.question || '').toLowerCase()));
-          const fresh = data.questions.filter((q) => !existingKeys.has((q.question || '').toLowerCase()));
-          return [...prev, ...fresh];
-        });
-      }
-    } catch (error) {
-      console.error('Failed to load Notopedia data:', error);
-      setQuestionsError(error.message);
-    } finally {
-      setLoadingNotopedia(false);
-      setNotopediaLoading(false);
+  const removeApiKey = (id) => {
+    const keys = savedKeys.filter((k) => k.id !== id);
+    persistKeys(keys);
+    if (activeKeyId === id) {
+      const next = keys.length > 0 ? keys[0].id : null;
+      setActiveKeyId(next);
+      if (next) localStorage.setItem('ai-active-key', next);
+      else localStorage.removeItem('ai-active-key');
     }
+    setApiKeyStatus('🗑️ Key removed');
+    setTimeout(() => setApiKeyStatus(null), 3000);
   };
 
-  const generateNemotronQuestions = async () => {
-    const apiKey = apiKeyInput.trim() || localStorage.getItem('nemotron-api-key') || '';
+  const selectActiveKey = (id) => {
+    setActiveKeyId(id);
+    localStorage.setItem('ai-active-key', id);
+  };
+
+  const getActiveKey = () => {
+    return savedKeys.find((k) => k.id === activeKeyId) || savedKeys[0] || null;
+  };
+
+  const getEffectiveApiKey = () => {
+    const active = getActiveKey();
+    return active ? active.key : '';
+  };
+
+  const getEffectiveProvider = () => {
+    const active = getActiveKey();
+    return active ? active.provider : provider;
+  };
+
+  const generateQuestions = async () => {
+    const apiKey = getEffectiveApiKey();
     if (!apiKey) {
-      setApiKeyStatus('⚠️ Add your Nemotron API key in settings first (⚙️ button above)');
+      setApiKeyStatus('⚠️ Add an AI API key in settings first (⚙️ button above)');
       setTimeout(() => setApiKeyStatus(null), 5000);
       return;
     }
 
-    setLoadingNemotron(true);
-    setGenProgress({ done: 0, total: 1, label: 'Generating...' });
+    const topics = generateTopics();
+    const topicsInfo = topics.map((id) => GENERATE_TOPICS.find((t) => t.id === id)).filter(Boolean);
+    const batchCount = Math.max(1, Math.round(genConfig.count / topics.length));
+    setLoadingAi(true);
+    let added = 0;
+    setGenProgress({ done: 0, total: topics.length, label: 'Generating from previous papers + live web sources...' });
     try {
-      const response = await fetch('/api/nemotron/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...nemotronConfig, apiKey }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        setQuestions((prev) => {
-          const existingKeys = new Set(prev.map((q) => (q.question || '').toLowerCase()));
-          const fresh = data.questions.filter((q) => !existingKeys.has((q.question || '').toLowerCase()));
-          return [...fresh, ...prev];
-        });
-        alert(`✅ Generated ${data.count} new questions and added them to the Question Bank!`);
-      } else {
-        alert(data.error || 'Failed to generate questions');
+      for (let i = 0; i < topics.length; i++) {
+        const topic = topics[i];
+        const topicInfo = topicsInfo[i] || { id: topic, label: topic };
+        setGenProgress({ done: i, total: topics.length, label: `Generating ${topicInfo.label} (${batchCount} Qs)...` });
+        try {
+          const newQuestions = await generateQuestionsWithAI({
+            category: topic,
+            difficulty: genConfig.difficulty,
+            count: batchCount,
+            apiKey,
+            provider: getEffectiveProvider(),
+          });
+          setQuestions((prev) => {
+            const existingKeys = new Set(prev.map((q) => (q.question || '').toLowerCase()));
+            const fresh = newQuestions.filter((q) => !existingKeys.has((q.question || '').toLowerCase()));
+            return [...fresh, ...prev];
+          });
+          added += newQuestions.length;
+        } catch (error) {
+          console.error(`Generate error for ${topic}:`, error);
+          alert(`Error for "${topicInfo.label}": ${error.message}`);
+          break;
+        }
       }
-    } catch (error) {
-      alert('Error: ' + error.message);
+      setBankCount((prev) => prev + added);
+      if (added > 0) {
+        alert(`✅ Generated ${added} new questions (based on SSC CGL/CHSL previous papers + live web sources). Saved to the shared bank — visible to everyone!`);
+      }
     } finally {
-      setLoadingNemotron(false);
+      setLoadingAi(false);
       setGenProgress(null);
     }
   };
 
   // Batch generation: create 25 questions for each selected topic
   const generateBatch = async () => {
-    const apiKey = apiKeyInput.trim() || localStorage.getItem('nemotron-api-key') || '';
+    const apiKey = getEffectiveApiKey();
     if (!apiKey) {
-      setApiKeyStatus('⚠️ Add your Nemotron API key in settings first (⚙️ button above)');
+      setApiKeyStatus('⚠️ Add an AI API key in settings first (⚙️ button above)');
       setTimeout(() => setApiKeyStatus(null), 5000);
       return;
     }
 
-    const topics = Object.values(GENERATE_TOPICS);
+    const topics = generateTopics().map((id) => GENERATE_TOPICS.find((t) => t.id === id)).filter(Boolean);
     const batchCount = 25;
     const totalBatches = topics.length;
 
-    setLoadingNemotron(true);
+    setLoadingAi(true);
     setGenProgress({ done: 0, total: totalBatches, label: 'Starting batch generation...' });
 
     let added = 0;
     for (let i = 0; i < topics.length; i++) {
       const topic = topics[i];
-      setGenProgress({ done: i, total: totalBatches, label: `Generating ${topic.label} (${batchCount} Qs)...` });
+      setGenProgress({ done: i, total: totalBatches, label: `Generating ${topic.label} (${batchCount} Qs) from web sources...` });
       try {
-        const response = await fetch('/api/nemotron/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            category: topic.id,
-            difficulty: nemotronConfig.difficulty,
-            count: batchCount,
-            apiKey,
-          }),
+        const newQuestions = await generateQuestionsWithAI({
+          category: topic.id,
+          difficulty: genConfig.difficulty,
+          count: batchCount,
+          apiKey,
+          provider: getEffectiveProvider(),
         });
-        const data = await response.json();
-        if (data.success) {
-          setQuestions((prev) => {
-            const existingKeys = new Set(prev.map((q) => (q.question || '').toLowerCase()));
-            const fresh = data.questions.filter((q) => !existingKeys.has((q.question || '').toLowerCase()));
-            return [...fresh, ...prev];
-          });
-          added += data.count;
-        }
+        setQuestions((prev) => {
+          const existingKeys = new Set(prev.map((q) => (q.question || '').toLowerCase()));
+          const fresh = newQuestions.filter((q) => !existingKeys.has((q.question || '').toLowerCase()));
+          return [...fresh, ...prev];
+        });
+        added += newQuestions.length;
       } catch (error) {
         console.error(`Batch error for ${topic.id}:`, error);
       }
     }
 
-    setLoadingNemotron(false);
+    setLoadingAi(false);
     setGenProgress(null);
-    alert(`✅ Batch complete! Added ${added} questions (25 per topic) to the Question Bank.`);
+    setBankCount((prev) => prev + added);
+    alert(`✅ Batch complete! Added ${added} questions to the shared Question Bank — visible to everyone visiting this site.`);
   };
 
   const filteredQuestions = questions
@@ -242,7 +277,7 @@ export default function QuestionBank() {
         {/* Header */}
         <div className="mb-6 animate-fade-in">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Question Bank</h1>
-          <p className="text-gray-600 dark:text-gray-400">Notopedia + AI-generated questions • Generate unlimited questions and they get saved to your bank</p>
+          <p className="text-gray-600 dark:text-gray-400">AI-generated questions from SSC CGL previous year patterns • Questions saved to the shared bank are visible to everyone visiting this site</p>
         </div>
 
         {/* Toolbar */}
@@ -307,8 +342,8 @@ export default function QuestionBank() {
             <div className="flex flex-wrap items-center gap-4">
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">🤖 Generate Questions:</span>
               <select
-                value={nemotronConfig.category}
-                onChange={(e) => setNemotronConfig({...nemotronConfig, category: e.target.value})}
+                value={genConfig.category}
+                onChange={(e) => setGenConfig({...genConfig, category: e.target.value})}
                 className="input-field w-auto min-w-[160px] py-2 text-sm"
               >
                 {GENERATE_TOPICS.map((t) => (
@@ -316,8 +351,8 @@ export default function QuestionBank() {
                 ))}
               </select>
               <select
-                value={nemotronConfig.difficulty}
-                onChange={(e) => setNemotronConfig({...nemotronConfig, difficulty: e.target.value})}
+                value={genConfig.difficulty}
+                onChange={(e) => setGenConfig({...genConfig, difficulty: e.target.value})}
                 className="input-field w-auto min-w-[120px] py-2 text-sm"
               >
                 <option value="easy">Easy</option>
@@ -328,59 +363,151 @@ export default function QuestionBank() {
                 type="number"
                 min="5"
                 max="50"
-                value={nemotronConfig.count}
-                onChange={(e) => setNemotronConfig({...nemotronConfig, count: parseInt(e.target.value) || 25})}
+                value={genConfig.count}
+                onChange={(e) => setGenConfig({...genConfig, count: parseInt(e.target.value) || 25})}
                 className="input-field w-auto min-w-[70px] py-2 text-sm"
               />
               <button
-                onClick={generateNemotronQuestions}
-                disabled={loadingNemotron}
+                onClick={generateQuestions}
+                disabled={loadingAi}
                 className="btn-primary py-2 px-4 text-sm"
               >
-                {loadingNemotron ? 'Generating...' : '🎯 Generate & Add to Bank'}
+                {loadingAi ? 'Generating...' : '🎯 Generate & Save to Bank'}
               </button>
               <button
                 onClick={generateBatch}
-                disabled={loadingNemotron}
+                disabled={loadingAi}
                 className="btn-primary py-2 px-4 text-sm bg-gradient-to-r from-purple-600 to-pink-600"
-                title="Generate 25 questions for each of the 10 topics (250 total)"
+                title="Generate 25 questions for each selected topic"
               >
-                {loadingNemotron ? 'Generating...' : '🚀 Batch: 25 Qs × 10 Topics (250)'}
+                {loadingAi ? 'Generating...' : '🚀 Batch: 25 Qs × Selected Topics'}
               </button>
               <button
-                onClick={loadNotopediaData}
-                disabled={loadingNotopedia}
+                onClick={() => loadSharedBank(true)}
                 className="btn-secondary py-2 px-4 text-sm"
+                title="Reload the shared question bank"
               >
-                {loadingNotopedia ? 'Loading...' : '🔄 Refresh from Notopedia'}
+                🔄 Load Shared Bank
               </button>
               <button
                 onClick={() => setShowApiSettings(!showApiSettings)}
-                className={`btn-secondary py-2 px-3 text-sm ${apiKeyInput ? 'border-green-400' : ''}`}
-                title="API key settings"
+                className={`btn-secondary py-2 px-3 text-sm ${savedKeys.length > 0 ? 'border-green-400' : ''}`}
+                title="AI settings: manage API keys + provider"
               >
-                ⚙️ {apiKeyInput ? 'Key Set ✓' : 'API Key'}
+                ⚙️ {getActiveKey() ? getActiveKey().name : 'API Keys'} {savedKeys.length > 0 ? `(${savedKeys.length})` : ''}
               </button>
             </div>
 
-            {/* API Key Settings */}
+            {/* Multi-topic selection */}
+            <div className="mt-3">
+              <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+                🎯 Select topics likely to be asked in SSC CGL/CHSL (click to toggle; none selected = the single topic above):
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {GENERATE_TOPICS.map((t) => {
+                  const active = selectedTopics.includes(t.id);
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => toggleTopic(t.id)}
+                      className={`px-3 py-1.5 rounded-full text-xs border transition-all ${
+                        active
+                          ? 'border-primary-500 bg-primary-500 text-white'
+                          : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'
+                      }`}
+                    >
+                      {t.icon} {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* AI Settings: Multi-key manager */}
             {showApiSettings && (
               <div className="mt-3 p-4 bg-gray-50 dark:bg-dark-800/50 rounded-xl border border-gray-200 dark:border-gray-700 animate-slide-down">
-                <label className="label-text">Nemotron API Key</label>
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <input
-                    type="password"
-                    value={apiKeyInput}
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                    placeholder="nvapi-..."
-                    className="input-field flex-1"
-                    autoComplete="off"
-                  />
-                  <button onClick={saveApiKey} className="btn-primary py-2 px-4 text-sm whitespace-nowrap">💾 Save Key</button>
+                {/* Saved keys list */}
+                {savedKeys.length > 0 && (
+                  <div className="mb-4">
+                    <label className="label-text">Saved Keys (click to select active)</label>
+                    <div className="space-y-2 mt-2">
+                      {savedKeys.map((k) => (
+                        <div
+                          key={k.id}
+                          onClick={() => selectActiveKey(k.id)}
+                          className={`flex items-center justify-between gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                            activeKeyId === k.id
+                              ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                              : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 hover:border-primary-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${activeKeyId === k.id ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
+                            <div className="min-w-0">
+                              <p className="font-medium text-sm text-gray-900 dark:text-white truncate">{k.name}</p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {getProvider(k.provider).name} • {k.key.slice(0, 8)}••••••••{k.key.slice(-4)}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); removeApiKey(k.id); }}
+                            className="text-gray-400 hover:text-red-500 p-1 flex-shrink-0"
+                            title="Remove key"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Add new key */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="label-text">Key Name</label>
+                    <input
+                      type="text"
+                      value={newKeyName}
+                      onChange={(e) => setNewKeyName(e.target.value)}
+                      placeholder="e.g. My Nemotron, Work Groq..."
+                      className="input-field mt-1"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div>
+                    <label className="label-text">AI Provider</label>
+                    <select
+                      value={newKeyProvider}
+                      onChange={(e) => setNewKeyProvider(e.target.value)}
+                      className="input-field mt-1"
+                    >
+                      {AI_PROVIDERS.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      🔗 Get a free key: <a href={getProvider(newKeyProvider).signup} target="_blank" rel="noreferrer" className="text-primary-600 underline">{getProvider(newKeyProvider).name}</a>
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  🔒 Get a free key from <a href="https://build.nvidia.com/explore/discover" target="_blank" rel="noreferrer" className="text-primary-600 underline">build.nvidia.com</a>.
-                  Your key is stored only in your browser's local storage and sent to the AI provider — never exposed publicly.
+                <div className="mt-3">
+                  <label className="label-text">API Key</label>
+                  <div className="flex flex-col sm:flex-row gap-3 mt-1">
+                    <input
+                      type="password"
+                      value={newKeyValue}
+                      onChange={(e) => setNewKeyValue(e.target.value)}
+                      placeholder="Paste your API key..."
+                      className="input-field flex-1"
+                      autoComplete="off"
+                    />
+                    <button onClick={addApiKey} className="btn-primary py-2 px-4 text-sm whitespace-nowrap">➕ Add Key</button>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
+                  🔒 Keys are stored only in your browser (localStorage), shown masked, and sent directly to the AI provider — never exposed publicly. You can add multiple named keys and switch between them. Generated questions are saved to the shared bank so every visitor can see them.
                   {apiKeyStatus && <span className="block mt-1 text-primary-600 dark:text-primary-400 font-medium">{apiKeyStatus}</span>}
                 </p>
               </div>
@@ -413,6 +540,7 @@ export default function QuestionBank() {
           <p className="text-sm text-gray-600 dark:text-gray-400">
             Showing <span className="font-semibold text-primary-600 dark:text-primary-400">{filteredQuestions.length}</span> of{' '}
             <span className="font-semibold">{questions.length}</span> questions
+            {bankCount > 0 && <span className="ml-2">• 🌐 {bankCount} shared bank questions</span>}
             {selectedTopic !== 'all' && <span className="ml-2">(filtered by {getTopicInfo(selectedTopic)})</span>}
           </p>
           <div className="flex flex-wrap gap-2 mt-2">
@@ -441,9 +569,9 @@ export default function QuestionBank() {
           <div className="glass-card p-12 text-center animate-fade-in">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No questions found</h3>
-            <p className="text-gray-600 dark:text-gray-400 mb-6">Try adjusting your filters, refresh from Notopedia, or generate fresh questions with AI</p>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">Add your AI API key, then generate fresh questions based on SSC CGL previous year patterns</p>
             <div className="flex flex-wrap justify-center gap-3">
-              <button onClick={loadNotopediaData} className="btn-primary">🔄 Load Notopedia Questions</button>
+              <button onClick={() => setShowApiSettings(true)} className="btn-primary">⚙️ Add API Key</button>
               <button onClick={generateBatch} className="btn-primary bg-gradient-to-r from-purple-600 to-pink-600">🚀 Generate Full Question Bank</button>
             </div>
           </div>
@@ -480,6 +608,10 @@ function QuestionCard({ question, index, showAnswer, onToggleAnswer, isBookmarke
   const sourceIcons = {
     notopedia: '📄',
     nemotron: '🤖',
+    openai: '🤖',
+    groq: '🤖',
+    gemini: '🤖',
+    ai: '🤖',
   };
 
   if (viewMode === 'list') {
