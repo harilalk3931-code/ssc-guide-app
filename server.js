@@ -4,7 +4,6 @@ import fs from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import dotenv from 'dotenv';
 import cors from 'cors';
-import * as cheerio from 'cheerio';
 
 dotenv.config();
 
@@ -22,28 +21,71 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Fetch and parse questions from Notopedia
-app.get('/api/notopedia/questions', async (req, res) => {
-  try {
-    const { url } = req.query;
-    const targetUrl = url || process.env.NOTOPEDIA_URL || 'https://www.notopedia.com/sarkari-job-exams/SSC-CGL-%3E/Tier-I/5/32/200302/35/142/Tier-I';
+// --- Shared Question Bank (JSON file store) ---
+const BANK_FILE = path.join(__dirname, 'data', 'questions-bank.json');
 
-    const questions = await fetchNotopediaQuestions(targetUrl);
-    res.json({ success: true, questions, count: questions.length });
-  } catch (error) {
-    console.error('Notopedia fetch error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch questions from Notopedia',
-      details: error.message,
-    });
+function loadBank() {
+  try {
+    if (fs.existsSync(BANK_FILE)) {
+      return JSON.parse(fs.readFileSync(BANK_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('Bank load error:', e.message);
   }
+  return [];
+}
+
+function saveBank(questions) {
+  try {
+    fs.mkdirSync(path.dirname(BANK_FILE), { recursive: true });
+    fs.writeFileSync(BANK_FILE, JSON.stringify(questions, null, 2));
+  } catch (e) {
+    console.error('Bank save error:', e.message);
+  }
+}
+
+function appendToBank(newQuestions) {
+  const bank = loadBank();
+  const existing = new Set(bank.map((q) => (q.question || '').toLowerCase()));
+  const seen = new Set();
+  const fresh = newQuestions
+    .filter((q) => q && q.question)
+    .filter((q) => {
+      const k = (q.question || '').toLowerCase();
+      if (existing.has(k) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .map((q, i) => ({
+      ...q,
+      id: q.id || `bank-${Date.now()}-${i}`,
+      source: q.source || 'ai',
+    }));
+  const next = [...fresh, ...bank];
+  saveBank(next);
+  return { added: fresh.length, total: next.length, questions: next };
+}
+
+// Get all shared questions
+app.get('/api/bank/questions', (req, res) => {
+  const bank = loadBank();
+  res.json({ success: true, questions: bank, count: bank.length });
 });
 
-// Generate questions with Nemotron API
-app.post('/api/nemotron/generate', async (req, res) => {
+// Save questions to the shared bank
+app.post('/api/bank/questions', (req, res) => {
+  const { questions } = req.body || {};
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return res.status(400).json({ success: false, error: 'No questions provided' });
+  }
+  const result = appendToBank(questions);
+  res.json({ success: true, added: result.added, total: result.total });
+});
+
+// Generate questions with AI (multi-provider)
+app.post('/api/ai/generate', async (req, res) => {
   try {
-    const { category, difficulty, count, apiKey } = req.body;
+    const { category, difficulty, count, apiKey, provider } = req.body;
 
     if (!category || !difficulty || !count) {
       return res.status(400).json({
@@ -52,31 +94,34 @@ app.post('/api/nemotron/generate', async (req, res) => {
       });
     }
 
-    const nemotronKey = apiKey || process.env.NEMOTRON_API_KEY;
-    if (!nemotronKey) {
+    const key = apiKey || process.env.NEMOTRON_API_KEY;
+    if (!key) {
       return res.status(500).json({
         success: false,
-        error: 'Nemotron API key not configured',
+        error: 'AI API key not configured. Add one in Settings.',
       });
     }
 
-    const questions = await generateQuestionsWithNemotron(category, difficulty, count, nemotronKey);
+    const questions = await generateQuestionsWithAI(provider || 'nemotron', key, category, difficulty, count);
 
-    res.json({ success: true, questions, count: questions.length });
+    // Auto-save generated questions to the shared bank
+    const bankResult = appendToBank(questions);
+
+    res.json({ success: true, questions, count: questions.length, bankTotal: bankResult.total });
   } catch (error) {
-    console.error('Nemotron generation error:', error);
+    console.error('AI generation error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate questions with Nemotron',
+      error: 'Failed to generate questions with AI',
       details: error.message,
     });
   }
 });
 
-// Generate detailed guide notes with Nemotron API
-app.post('/api/nemotron/notes', async (req, res) => {
+// Generate detailed guide notes with AI (multi-provider)
+app.post('/api/ai/notes', async (req, res) => {
   try {
-    const { subject, topic, apiKey } = req.body;
+    const { subject, topic, apiKey, provider } = req.body;
 
     if (!subject || !topic) {
       return res.status(400).json({
@@ -85,26 +130,72 @@ app.post('/api/nemotron/notes', async (req, res) => {
       });
     }
 
-    const nemotronKey = apiKey || process.env.NEMOTRON_API_KEY;
-    if (!nemotronKey) {
+    const key = apiKey || process.env.NEMOTRON_API_KEY;
+    if (!key) {
       return res.status(500).json({
         success: false,
-        error: 'Nemotron API key not configured',
+        error: 'AI API key not configured. Add one in Settings.',
       });
     }
 
-    const notes = await generateDetailedNotes(subject, topic, nemotronKey);
+    const notes = await generateDetailedNotesWithAI(provider || 'nemotron', key, subject, topic);
 
     res.json({ success: true, notes, subject, topic });
   } catch (error) {
-    console.error('Nemotron notes generation error:', error);
+    console.error('AI notes generation error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate notes with Nemotron',
+      error: 'Failed to generate notes with AI',
       details: error.message,
     });
   }
 });
+
+// Backward-compatible aliases (Nemotron = default provider)
+app.post('/api/nemotron/generate', (req, res) => {
+  req.body.provider = req.body.provider || 'nemotron';
+  handleGenerate(res, req.body);
+});
+
+app.post('/api/nemotron/notes', (req, res) => {
+  req.body.provider = req.body.provider || 'nemotron';
+  handleNotes(res, req.body);
+});
+
+async function handleGenerate(res, { category, difficulty, count, apiKey, provider }) {
+  try {
+    if (!category || !difficulty || !count) {
+      return res.status(400).json({ success: false, error: 'Missing required parameters: category, difficulty, count' });
+    }
+    const key = apiKey || process.env.NEMOTRON_API_KEY;
+    if (!key) {
+      return res.status(500).json({ success: false, error: 'AI API key not configured. Add one in Settings.' });
+    }
+    const questions = await generateQuestionsWithAI(provider || 'nemotron', key, category, difficulty, count);
+    const bankResult = appendToBank(questions);
+    res.json({ success: true, questions, count: questions.length, bankTotal: bankResult.total });
+  } catch (error) {
+    console.error('AI generation error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate questions with AI', details: error.message });
+  }
+}
+
+async function handleNotes(res, { subject, topic, apiKey, provider }) {
+  try {
+    if (!subject || !topic) {
+      return res.status(400).json({ success: false, error: 'Missing required parameters: subject, topic' });
+    }
+    const key = apiKey || process.env.NEMOTRON_API_KEY;
+    if (!key) {
+      return res.status(500).json({ success: false, error: 'AI API key not configured. Add one in Settings.' });
+    }
+    const notes = await generateDetailedNotesWithAI(provider || 'nemotron', key, subject, topic);
+    res.json({ success: true, notes, subject, topic });
+  } catch (error) {
+    console.error('AI notes generation error:', error);
+    res.status(500).json({ success: false, error: 'Failed to generate notes with AI', details: error.message });
+  }
+}
 
 // Get SSC CGL syllabus structure
 app.get('/api/syllabus', (req, res) => {
@@ -172,146 +263,110 @@ app.get('/api/syllabus', (req, res) => {
   res.json({ success: true, syllabus });
 });
 
-// --- Notopedia Scraper ---
-async function fetchNotopediaQuestions(url) {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5',
-    },
-    redirect: 'follow',
-  });
+// --- AI Provider Integration ---
+const AI_PROVIDERS = {
+  nemotron: {
+    name: 'NVIDIA Nemotron',
+    type: 'openai',
+    endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    models: [
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+      'nvidia/nemotron-4-340b-instruct',
+      'meta/llama-3.1-70b-instruct',
+    ],
+    color: '#76B900',
+  },
+  openai: {
+    name: 'OpenAI',
+    type: 'openai',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    models: ['gpt-4o-mini'],
+    color: '#10A37F',
+  },
+  groq: {
+    name: 'Groq (Llama)',
+    type: 'openai',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    models: ['llama-3.3-70b-versatile'],
+    color: '#F55036',
+  },
+  gemini: {
+    name: 'Google Gemini',
+    type: 'gemini',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    models: ['gemini-1.5-flash'],
+    color: '#4285F4',
+  },
+};
 
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
-  }
+async function callAIProvider(provider, apiKey, systemPrompt, userPrompt, { maxTokens = 4000, temperature = 0.7 } = {}) {
+  const cfg = AI_PROVIDERS[provider] || AI_PROVIDERS.nemotron;
+  let lastError = '';
 
-  const html = await response.text();
-  return parseNotopediaHTML(html);
-}
+  for (const model of cfg.models) {
+    try {
+      if (cfg.type === 'gemini') {
+        const url = `${cfg.endpoint}/${model}:generateContent?key=${apiKey}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] },
+            ],
+            generationConfig: {
+              temperature,
+              maxOutputTokens: maxTokens,
+              topP: 0.9,
+            },
+          }),
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          lastError = `${model}: ${response.status} - ${errText}`;
+          continue;
+        }
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') || '';
+        return text.trim();
+      }
 
-function parseNotopediaHTML(html) {
-  const $ = cheerio.load(html);
-
-  const questions = [];
-  const seen = new Set();
-
-  const pushQuestion = (q) => {
-    if (!q.question || q.options.length < 2) return;
-    const key = q.question.toLowerCase().slice(0, 80);
-    if (seen.has(key)) return;
-    seen.add(key);
-    questions.push(q);
-  };
-
-  // Strategy 1: Look for structured question blocks with options
-  $('div, section, article, li').each((i, el) => {
-    const $el = $(el);
-    const text = $el.text().trim();
-    if (!text || text.length < 40) return;
-
-    // Skip huge blocks
-    if (text.length > 3000) return;
-
-    const questionMatch = text.match(/^[\d.()\s]*([^\n]+?\?)/);
-    if (!questionMatch) return;
-
-    // Find options within this element - look for A/B/C/D patterns
-    const optionMatches = text.match(/(?:^|\n)\s*(?:\(?[a-dA-D]\)?|[a-dA-D][.\.)])\s*(.+?)(?=(?:\n\s*(?:\(?[a-dA-D]\)?|[a-dA-D][.\.)])\s*)|$)/gs);
-
-    if (!optionMatches || optionMatches.length < 4) return;
-
-    const options = optionMatches
-      .map((m) => m.replace(/^\s*(?:\(?[a-dA-D]\)?|[a-dA-D][.\.)])\s*/, '').trim())
-      .filter((o) => o);
-
-    if (options.length < 4) return;
-
-    const question = questionMatch[1].replace(/^\d+[.)]\s*/, '').trim();
-
-    // Try to find answer - look for patterns like "Answer: X" or correct answer marker
-    const answerMatch = text.match(/(?:Answer|Ans|Correct Answer)\s*[:\-]?\s*(?:\(?([a-dA-D])\)?|(.+))/i);
-    const answerText = answerMatch ? answerMatch[1]?.trim() : null;
-    const answer = answerText
-      ? options[answerText.toLowerCase().charCodeAt(0) - 97]
-      : null;
-
-    pushQuestion({
-      id: `notopedia-${i}-${questions.length}`,
-      question,
-      options,
-      answer: answer || options[0],
-      explanation: 'Source: Notopedia SSC CGL Tier-I Sample Paper',
-      source: 'notopedia',
-      topic: extractTopic(question),
-      difficulty: 'medium',
-    });
-  });
-
-  // Strategy 2: Fallback - look for numbered questions followed by option-like lines
-  if (questions.length === 0) {
-    const blocks = html
-      .split(/\n{2,}/)
-      .map((b) => cheerio.load(b).text().trim())
-      .filter((b) => b.length > 10);
-
-    blocks.forEach((block, i) => {
-      const questionMatch = block.match(/^\s*\d+[.)]\s*([^\n]+?\?)/);
-      if (!questionMatch) return;
-
-      const optionMatches = block.match(/(?:^|\n)\s*(?:\(?[a-dA-D]\)?|[a-dA-D][.\.)])\s*([^\n]+)/g);
-      if (!optionMatches || optionMatches.length < 4) return;
-
-      const options = optionMatches.map((m) => m.replace(/^\s*(?:\(?[a-dA-D]\)?|[a-dA-D][.\.)])\s*/, '').trim());
-      const question = questionMatch[1].replace(/^\d+[.)]\s*/, '').trim();
-
-      pushQuestion({
-        id: `notopedia-fallback-${i}`,
-        question,
-        options: options.slice(0, 4),
-        answer: options[0],
-        explanation: 'Source: Notopedia SSC CGL Tier-I',
-        source: 'notopedia',
-        topic: extractTopic(question),
-        difficulty: 'medium',
+      // OpenAI-compatible (Nemotron, OpenAI, Groq)
+      const response = await fetch(cfg.endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature,
+          max_tokens: maxTokens,
+          top_p: 0.9,
+        }),
       });
-    });
-  }
 
-  // If parsing still fails, return curated sample questions so the app always has content
-  if (questions.length === 0) {
-    return getFallbackQuestions();
-  }
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        return content.trim();
+      }
 
-  return questions;
-}
-
-function extractTopic(questionText) {
-  const topics = {
-    'current-affairs': ['current affair', 'news', 'recent', 'appointment', 'award', 'summit', 'minister', 'scheme'],
-    'history': ['history', 'ancient', 'medieval', 'modern', 'battle', 'dynasty', 'emperor', 'freedom', 'independence', 'mohan', 'gandhi', 'nehru'],
-    'geography': ['geography', 'river', 'mountain', 'state', 'capital', 'climate', 'soil', 'agriculture', 'mineral', 'coast'],
-    'polity': ['polity', 'constitution', 'article', 'amendment', 'parliament', 'president', 'supreme court', 'fundamental right', 'governor'],
-    'economy': ['economy', 'gdp', 'inflation', 'budget', 'tax', 'bank', 'rbi', 'finance', 'market', 'trade', 'fiscal'],
-    'science': ['science', 'physics', 'chemistry', 'biology', 'space', 'isro', 'drdo', 'technology', 'invention', 'discovery', 'study'],
-    'reasoning': ['analogy', 'series', 'coding', 'decoding', 'blood relation', 'direction', 'syllogism', 'puzzle', 'pattern', 'odd'],
-    'quant': ['percentage', 'ratio', 'average', 'profit', 'loss', 'interest', 'time', 'work', 'distance', 'speed', 'number', 'simplification', 'area', 'volume'],
-    'english': ['grammar', 'vocabulary', 'comprehension', 'cloze', 'error', 'sentence', 'fill', 'blank', 'synonym', 'antonym', 'spelling'],
-  };
-
-  const lowerText = ` ${questionText.toLowerCase()} `;
-  for (const [topic, keywords] of Object.entries(topics)) {
-    if (keywords.some((keyword) => lowerText.includes(keyword))) {
-      return topic;
+      const errText = await response.text();
+      lastError = `${model}: ${response.status} - ${errText}`;
+    } catch (e) {
+      lastError = `${model}: ${e.message}`;
     }
   }
-  return 'general-awareness';
+
+  throw new Error(`${cfg.name} API error: ${lastError || 'All models failed'}`);
 }
 
-// --- Nemotron API Integration ---
-async function generateQuestionsWithNemotron(category, difficulty, count, apiKey) {
+async function generateQuestionsWithAI(provider, apiKey, category, difficulty, count) {
   const difficultyMap = {
     easy: 'Basic recall of facts, straightforward questions with obvious distractors',
     medium: 'Require moderate understanding, including connections between concepts, with plausible distractors',
@@ -327,6 +382,7 @@ Requirements:
 - One correct answer that exactly matches one option
 - Detailed explanation (2-3 sentences) for each question
 - Questions should be India-centric and relevant to SSC CGL exam pattern
+- Draw from SSC CGL previous year question trends and standard general knowledge
 - For Current Affairs: Use events up to 2024
 - For Static GK: Focus on Indian History, Geography, Polity, Economy, Science
 - Make questions clear, concise, and unambiguous
@@ -343,73 +399,33 @@ Return ONLY a valid JSON array in this exact format:
 ]
 `;
 
-  const modelsToTry = [
-    'nvidia/llama-3.1-nemotron-70b-instruct',
-    'nvidia/nemotron-4-340b-instruct',
-    'meta/llama-3.1-70b-instruct',
-  ];
-
-  let response;
-  let lastError = '';
-
-  for (const model of modelsToTry) {
-    try {
-      response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: 'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only.' },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.7,
-          max_tokens: 4000,
-          top_p: 0.9,
-        }),
-      });
-
-      if (response.ok) break;
-      const errText = await response.text();
-      lastError = `${model}: ${response.status} - ${errText}`;
-      if (response.status !== 404 && response.status !== 400) {
-        // If it's auth or quota error (e.g. 401/403/429), don't keep looping models
-        throw new Error(`Nemotron API error (${response.status}): ${errText}`);
-      }
-    } catch (e) {
-      if (e.message.includes('Nemotron API error')) throw e;
-      lastError = e.message;
-    }
-  }
-
-  if (!response || !response.ok) {
-    throw new Error(`Nemotron API error: ${lastError || 'All models failed'}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
+  const content = await callAIProvider(
+    provider,
+    apiKey,
+    'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only.',
+    prompt,
+    { maxTokens: 4000, temperature: 0.7 }
+  );
 
   const jsonMatch = content.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    throw new Error('No valid JSON found in Nemotron response');
+    throw new Error('No valid JSON found in AI response');
   }
 
   const questions = JSON.parse(jsonMatch[0]);
 
   return questions.map((q, i) => ({
     ...q,
-    id: `nemotron-${Date.now()}-${i}`,
-    source: 'nemotron',
+    id: `${provider}-${Date.now()}-${i}`,
+    source: provider,
+    topic: category,
     category,
     difficulty,
   }));
 }
 
-// --- Generate detailed study notes with Nemotron ---
-async function generateDetailedNotes(subject, topic, apiKey) {
+// --- Generate detailed study notes with AI ---
+async function generateDetailedNotesWithAI(provider, apiKey, subject, topic) {
   const prompt = `
 You are an expert SSC CGL Tier-I exam mentor. Write DEEP, detailed, exam-focused study notes for the following topic.
 
@@ -454,61 +470,22 @@ Answer: ...
 Return only the notes text.
 `;
 
-  const modelsToTryNotes = [
-    'nvidia/llama-3.1-nemotron-70b-instruct',
-    'nvidia/nemotron-4-340b-instruct',
-    'meta/llama-3.1-70b-instruct',
-  ];
+  const content = await callAIProvider(
+    provider,
+    apiKey,
+    'You are an expert SSC CGL exam mentor who writes clear, accurate, detailed study notes.',
+    prompt,
+    { maxTokens: 3000, temperature: 0.5 }
+  );
 
-  let response;
-  let lastError = '';
-
-  for (const model of modelsToTryNotes) {
-    try {
-      response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: 'You are an expert SSC CGL exam mentor who writes clear, accurate, detailed study notes.' },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.5,
-          max_tokens: 3000,
-          top_p: 0.9,
-        }),
-      });
-
-      if (response.ok) break;
-      const errText = await response.text();
-      lastError = `${model}: ${response.status} - ${errText}`;
-      if (response.status !== 404 && response.status !== 400) {
-        throw new Error(`Nemotron API error (${response.status}): ${errText}`);
-      }
-    } catch (e) {
-      if (e.message.includes('Nemotron API error')) throw e;
-      lastError = e.message;
-    }
-  }
-
-  if (!response || !response.ok) {
-    throw new Error(`Nemotron API error: ${lastError || 'All models failed'}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
   if (!content.trim()) {
-    throw new Error('Empty response from Nemotron API');
+    throw new Error('Empty response from AI provider');
   }
 
   return content.trim();
 }
 
-// Fallback questions if Notopedia parsing fails (ensures the app always has content)
+// Curated SSC CGL sample questions used to seed the shared bank (always gives visitors content)
 function getFallbackQuestions() {  const all = [
     // General Awareness
     { topic: 'current-affairs', question: 'Who is the current President of India?', answer: 'Droupadi Murmu', options: ['Ram Nath Kovind', 'Droupadi Murmu', 'Pranab Mukherjee', 'L.K. Advani'], difficulty: 'easy', explanation: 'Droupadi Murmu was sworn in as the 15th President of India on 25 July 2022.' },
@@ -549,11 +526,23 @@ function getFallbackQuestions() {  const all = [
     options: q.options,
     answer: q.answer,
     explanation: q.explanation,
-    source: 'notopedia',
+    source: 'bank',
     topic: q.topic,
     difficulty: q.difficulty,
   }));
 }
+
+// Seed the shared bank with fallback questions on first run (so visitors always have content)
+function seedBankIfEmpty() {
+  const bank = loadBank();
+  if (bank.length === 0) {
+    const seed = getFallbackQuestions();
+    saveBank(seed);
+    console.log(`🌱 Seeded shared question bank with ${seed.length} questions`);
+  }
+}
+
+seedBankIfEmpty();
 
 // Serve built files in production
 if (process.env.NODE_ENV === 'production') {
