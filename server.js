@@ -82,7 +82,7 @@ app.post('/api/bank/questions', (req, res) => {
   res.json({ success: true, added: result.added, total: result.total });
 });
 
-// Generate questions with AI (multi-provider)
+// --- Generate questions with AI (multi-provider)
 app.post('/api/ai/generate', async (req, res) => {
   try {
     const { category, difficulty, count, apiKey, provider } = req.body;
@@ -102,7 +102,7 @@ app.post('/api/ai/generate', async (req, res) => {
       });
     }
 
-    const questions = await generateQuestionsWithAI(provider || 'nemotron', key, category, difficulty, count);
+    const questions = await generateQuestionsWithAI(provider || 'nemotron', key, category, difficulty, count, true);
 
     // Auto-save generated questions to the shared bank
     const bankResult = appendToBank(questions);
@@ -366,12 +366,22 @@ async function callAIProvider(provider, apiKey, systemPrompt, userPrompt, { maxT
   throw new Error(`${cfg.name} API error: ${lastError || 'All models failed'}`);
 }
 
-async function generateQuestionsWithAI(provider, apiKey, category, difficulty, count) {
+async function generateQuestionsWithAI(provider, apiKey, category, difficulty, count, useWebSources = true) {
   const difficultyMap = {
     easy: 'Basic recall of facts, straightforward questions with obvious distractors',
     medium: 'Require moderate understanding, including connections between concepts, with plausible distractors',
     hard: 'In-depth analysis, nuanced details, or application-based questions, with closely related distractors that test deep knowledge',
   };
+
+  // Gather real reference material from public web sources (Wikipedia + current news)
+  let webContext = '';
+  if (useWebSources) {
+    try {
+      webContext = await fetchWebContextForCategory(category);
+    } catch (e) {
+      console.error('Web context fetch failed (continuing without it):', e.message);
+    }
+  }
 
   const prompt = `
 Generate ${count} multiple-choice questions for SSC CGL Tier-I exam preparation on ${category}.
@@ -382,11 +392,14 @@ Requirements:
 - One correct answer that exactly matches one option
 - Detailed explanation (2-3 sentences) for each question
 - Questions should be India-centric and relevant to SSC CGL exam pattern
-- Draw from SSC CGL previous year question trends and standard general knowledge
-- For Current Affairs: Use events up to 2024
-- For Static GK: Focus on Indian History, Geography, Polity, Economy, Science
+- Base questions ONLY on real facts found in the "REFERENCE MATERIAL" below and on standard SSC CGL / CHSL previous-year question paper topics
+- For Current Affairs: use the latest real news headlines provided below
+- For Static GK: use the Wikipedia facts provided below
 - Make questions clear, concise, and unambiguous
 - Distractors must be plausible based on common misconceptions
+- Never invent facts, dates, or names that are not supported by the reference material or well-known public knowledge
+
+${webContext}
 
 Return ONLY a valid JSON array in this exact format:
 [
@@ -402,7 +415,7 @@ Return ONLY a valid JSON array in this exact format:
   const content = await callAIProvider(
     provider,
     apiKey,
-    'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only.',
+    'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only. Base every question strictly on real facts from the provided reference material and known SSC CGL/CHSL previous-year paper topics.',
     prompt,
     { maxTokens: 4000, temperature: 0.7 }
   );
@@ -422,6 +435,84 @@ Return ONLY a valid JSON array in this exact format:
     category,
     difficulty,
   }));
+}
+
+// --- Fetch real reference material from public web sources ---
+const TOPIC_SEARCH_TERMS = {
+  'general-awareness': 'India general knowledge facts',
+  'current-affairs': 'India current affairs latest news',
+  'history': 'History of India freedom struggle',
+  'geography': 'Geography of India rivers mountains',
+  'polity': 'Constitution of India polity',
+  'economy': 'Economy of India budget GDP',
+  'science': 'Science and technology in India ISRO',
+  'reasoning': 'Logical reasoning aptitude',
+  'quant': 'Quantitative aptitude mathematics formulas',
+  'english': 'English grammar vocabulary',
+};
+
+async function fetchWebContextForCategory(category) {
+  const searchTerm = TOPIC_SEARCH_TERMS[category] || 'India general knowledge';
+  const parts = [];
+
+  // 1. Wikipedia summary (public REST API, no key needed)
+  try {
+    const wikiRes = await fetch(
+      `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(searchTerm.split(' ')[0] || 'India')}`,
+      { headers: { 'User-Agent': 'SSCGuideApp/1.0 (educational)' } }
+    );
+    if (wikiRes.ok) {
+      const wiki = await wikiRes.json();
+      if (wiki && wiki.extract) {
+        parts.push(`[Wikipedia - ${wiki.title}]\n${wiki.extract.slice(0, 800)}`);
+      }
+    }
+  } catch (e) {
+    console.error('Wikipedia fetch failed:', e.message);
+  }
+
+  // 2. Latest news headlines (Google News RSS - public, no key needed)
+  try {
+    const newsRes = await fetch(
+      `https://news.google.com/rss/search?q=${encodeURIComponent('current affairs India 2026')}&hl=en-IN&gl=IN&ceid=IN:en`,
+      { headers: { 'User-Agent': 'SSCGuideApp/1.0 (educational)' } }
+    );
+    if (newsRes.ok) {
+      const rss = await newsRes.text();
+      const titles = [...rss.matchAll(/<title>(.*?)<\/title>/g)]
+        .map((m) => m[1].replace(/&amp;/g, '&').trim())
+        .filter((t) => t && !t.includes('Google News'))
+        .slice(0, 12);
+      if (titles.length > 0) {
+        parts.push(`[Latest News Headlines - ${new Date().toLocaleDateString('en-IN')}]\n${titles.join('\n')}`);
+      }
+    }
+  } catch (e) {
+    console.error('News fetch failed:', e.message);
+  }
+
+  // 3. Wikipedia search for the full topic term
+  try {
+    const searchRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(searchTerm)}&format=json&srlimit=3`,
+      { headers: { 'User-Agent': 'SSCGuideApp/1.0 (educational)' } }
+    );
+    if (searchRes.ok) {
+      const search = await searchRes.json();
+      const snippets = (search.query?.search || []).map((s) => `• ${s.title}: ${s.snippet.replace(/<[^>]+>/g, '').slice(0, 200)}`);
+      if (snippets.length > 0) {
+        parts.push(`[Wikipedia search results for "${searchTerm}"]\n${snippets.join('\n')}`);
+      }
+    }
+  } catch (e) {
+    console.error('Wikipedia search failed:', e.message);
+  }
+
+  if (parts.length === 0) {
+    return '';
+  }
+
+  return `REFERENCE MATERIAL (use these real facts for question generation):\n${parts.join('\n\n')}\n\n`;
 }
 
 // --- Generate detailed study notes with AI ---
