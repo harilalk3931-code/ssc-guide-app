@@ -1,6 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Navbar from './Navbar';
 import { useStore } from '../store';
+
+const PROVIDER_NAMES = {
+  nemotron: 'NVIDIA Nemotron',
+  openai: 'OpenAI',
+  groq: 'Groq (Llama)',
+  gemini: 'Google Gemini',
+};
+const getProviderName = (providerId) => PROVIDER_NAMES[providerId] || 'AI';
 
 const GUIDE_NOTES = {
   'General Awareness': {
@@ -569,13 +577,30 @@ export default function GuideNotes() {
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [aiApiKeyInput, setAiApiKeyInput] = useState('');
   const [aiKeySaved, setAiKeySaved] = useState(false);
+  const [savedKeys, setSavedKeys] = useState([]);
+  const [activeKeyId, setActiveKeyId] = useState(null);
 
   const subjects = Object.keys(GUIDE_NOTES);
   const subjectData = GUIDE_NOTES[selectedSubject];
 
-  // Load saved AI notes topic + api key presence
+  // Load saved AI notes topic + saved API keys from shared storage
   const aiNotes = Object.keys(customNotes).filter((k) => k.startsWith('ai-note-'));
-  const savedAiKey = localStorage.getItem('nemotron-api-key');
+
+  useEffect(() => {
+    try {
+      const keys = JSON.parse(localStorage.getItem('ai-keys') || '[]');
+      setSavedKeys(keys);
+      const active = localStorage.getItem('ai-active-key');
+      setActiveKeyId(active && keys.some((k) => k.id === active) ? active : keys.length > 0 ? keys[0].id : null);
+    } catch (e) {
+      setSavedKeys([]);
+    }
+  }, []);
+
+  const getActiveKey = () => {
+    return savedKeys.find((k) => k.id === activeKeyId) || savedKeys[0] || null;
+  };
+  const savedAiKey = getActiveKey()?.key || '';
 
   const toggleSection = (sectionTitle) => {
     setExpandedSections((prev) => ({
@@ -595,24 +620,33 @@ export default function GuideNotes() {
       alert('Enter a topic to generate notes for.');
       return;
     }
-    const apiKey = aiApiKeyInput.trim() || localStorage.getItem('nemotron-api-key') || '';
+    const apiKey = aiApiKeyInput.trim() || getActiveKey()?.key || '';
     if (!apiKey) {
-      alert('Add your Nemotron API key in the ⚙️ settings first.');
+      alert('Add your AI API key in the ⚙️ settings first.');
       return;
     }
     if (aiApiKeyInput.trim()) {
-      localStorage.setItem('nemotron-api-key', aiApiKeyInput.trim());
+      // Save the new key into the shared multi-key storage
+      const keys = JSON.parse(localStorage.getItem('ai-keys') || '[]');
+      const entry = { id: crypto.randomUUID(), name: `${getProviderName(getActiveKey()?.provider || 'nemotron')} Key ${keys.length + 1}`, key: aiApiKeyInput.trim(), provider: getActiveKey()?.provider || 'nemotron' };
+      keys.push(entry);
+      localStorage.setItem('ai-keys', JSON.stringify(keys));
+      localStorage.setItem('ai-active-key', entry.id);
+      setSavedKeys(keys);
+      setActiveKeyId(entry.id);
       setAiKeySaved(true);
+      setAiApiKeyInput('');
     }
 
     const noteKey = `ai-note-${selectedSubject}-${topic.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     setAiGenerating(true);
     setAiProgress({ label: `Generating detailed notes on "${topic}"...` });
     try {
-      const response = await fetch('/api/nemotron/notes', {
+      const provider = getActiveKey()?.provider || 'nemotron';
+      const response = await fetch('/api/ai/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: selectedSubject, topic, apiKey }),
+        body: JSON.stringify({ subject: selectedSubject, topic, apiKey: getActiveKey()?.key || apiKey, provider }),
       });
       const data = await response.json();
       if (data.success) {
@@ -736,15 +770,19 @@ export default function GuideNotes() {
 
               <div className="mt-3">
                 <label className="label-text flex items-center gap-2">
-                  🔑 Nemotron API Key
-                  {savedAiKey && <span className="badge badge-success">Saved on device ✓</span>}
+                  🔑 AI API Key
+                  {getActiveKey() ? (
+                    <span className="badge badge-success">Using "{getActiveKey().name}" ({getProviderName(getActiveKey().provider)})</span>
+                  ) : savedAiKey ? (
+                    <span className="badge badge-success">Saved on device ✓</span>
+                  ) : null}
                 </label>
                 <div className="flex flex-col sm:flex-row gap-3">
                   <input
                     type="password"
                     value={aiApiKeyInput}
                     onChange={(e) => setAiApiKeyInput(e.target.value)}
-                    placeholder={savedAiKey ? 'Key already saved (leave blank to reuse)' : 'nvapi-...'}
+                    placeholder={savedAiKey ? 'Key already saved (leave blank to reuse)' : 'Enter a new key to save...'}
                     className="input-field flex-1"
                     autoComplete="off"
                   />
@@ -757,8 +795,7 @@ export default function GuideNotes() {
                   </button>
                 </div>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  🔒 Free key from <a href="https://build.nvidia.com/explore/discover" target="_blank" rel="noreferrer" className="text-primary-600 underline">build.nvidia.com</a>.
-                  Key is saved only on your device. {aiKeySaved && <span className="text-green-600 font-medium">Key saved!</span>}
+                  🔒 Keys are saved only on your device and sent directly to the AI provider. Manage multiple named keys (add / remove / switch) in the Question Bank ⚙️ settings — the active key is reused here. {aiKeySaved && <span className="text-green-600 font-medium">Key saved!</span>}
                 </p>
               </div>
 
