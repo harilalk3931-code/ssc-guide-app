@@ -65,6 +65,33 @@ export default function QuestionBank() {
     loadSavedKeys();
   }, []);
 
+  const loadSharedBank = async (silent = false) => {
+    try {
+      const bank = await fetchSharedBank();
+      setBankCount(bank.length);
+      setQuestions((prev) => {
+        const existingKeys = new Set((prev || []).map((q) => ((q && q.question) || '').toLowerCase()));
+        const fresh = (bank || []).filter((q) => q && q.question && !existingKeys.has(q.question.toLowerCase()));
+        return [...fresh, ...(prev || [])];
+      });
+    } catch (error) {
+      if (!silent) {
+        setQuestionsError(error.message);
+      }
+    }
+  };
+
+  const loadBookmarks = () => {
+    const saved = localStorage.getItem('ssc-guide-bookmarks');
+    if (saved) {
+      try {
+        setBookmarked(new Set(JSON.parse(saved)));
+      } catch (e) {
+        setBookmarked(new Set());
+      }
+    }
+  };
+
   const loadSavedKeys = () => {
     try {
       const keys = JSON.parse(localStorage.getItem('ai-keys') || '[]');
@@ -241,18 +268,23 @@ export default function QuestionBank() {
     alert(`✅ Batch complete! Added ${added} questions to the shared Question Bank — visible to everyone visiting this site.`);
   };
 
-  const filteredQuestions = questions
+  const filteredQuestions = (questions || [])
     .filter((q) => {
-      if (selectedTopic !== 'all' && q.topic !== selectedTopic && q.category !== selectedTopic) return false;
-      if (selectedDifficulty !== 'all' && q.difficulty !== selectedDifficulty) return false;
-      if (searchQuery && !q.question.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      const questionText = (q && q.question ? q.question : '').toLowerCase();
+      const qTopic = (q && q.topic) || (q && q.category) || 'general';
+      const qDiff = (q && q.difficulty) || 'medium';
+      if (selectedTopic !== 'all' && qTopic !== selectedTopic) return false;
+      if (selectedDifficulty !== 'all' && qDiff !== selectedDifficulty) return false;
+      if (searchQuery && !questionText.includes(searchQuery.toLowerCase())) return false;
       return true;
     })
     .sort((a, b) => {
-      // Sort by topic, then difficulty
-      if (a.topic !== b.topic) return a.topic.localeCompare(b.topic);
+      // Sort by topic, then difficulty (safe against missing fields)
+      const topicA = (a && a.topic) || (a && a.category) || 'general';
+      const topicB = (b && b.topic) || (b && b.category) || 'general';
+      if (topicA !== topicB) return topicA.localeCompare(topicB);
       const diffOrder = { easy: 0, medium: 1, hard: 2 };
-      return (diffOrder[a.difficulty] || 1) - (diffOrder[b.difficulty] || 1);
+      return (diffOrder[(a && a.difficulty)] || 1) - (diffOrder[(b && b.difficulty)] || 1);
     });
 
   const getTopicInfo = (topicId) => {
@@ -545,7 +577,7 @@ export default function QuestionBank() {
           </p>
           <div className="flex flex-wrap gap-2 mt-2">
             {GENERATE_TOPICS.slice(0, 10).map((t) => {
-              const count = questions.filter((q) => q.topic === t.id || q.category === t.id).length;
+              const count = (questions || []).filter((q) => q && ((q.topic === t.id) || (q.category === t.id))).length;
               if (count === 0) return null;
               return (
                 <button
