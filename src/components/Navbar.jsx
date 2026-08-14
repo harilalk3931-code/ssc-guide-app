@@ -33,9 +33,13 @@ export default function Navbar() {
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <Link to="/" className="flex items-center gap-2 text-xl font-bold text-gradient-dark" aria-label="SSC Guide Home">
-              <span className="text-2xl">🎯</span>
-              <span className="hidden sm:block">SSC Guide</span>
+            <Link to="/" className="flex items-center gap-2.5 text-xl font-bold" aria-label="PrepMaster Home">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center shadow-lg shadow-primary-500/30">
+                <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2L3 7v2h18V7L12 2zM5 11v6h3v-6H5zm5.5 0v6h3v-6h-3zm5.5 0v6h3v-6h-3zM3 19v2h18v-2H3z"/>
+                </svg>
+              </div>
+              <span className="hidden sm:block bg-gradient-to-r from-primary-600 to-purple-600 bg-clip-text text-transparent">PrepMaster</span>
             </Link>
 
             <div className="hidden md:flex items-center gap-1">
