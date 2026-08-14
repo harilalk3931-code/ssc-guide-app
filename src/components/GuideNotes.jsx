@@ -1,12 +1,75 @@
 import { useState, useEffect, useMemo } from 'react';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
 import Navbar from './Navbar';
 import { useStore } from '../store';
 
-marked.setOptions({ gfm: true, breaks: true });
+// Lightweight markdown renderer (no external deps needed on the server build)
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
-const renderMarkdown = (md) => DOMPurify.sanitize(marked.parse(md || ''));
+function inlineMarkdown(text) {
+  let s = escapeHtml(text);
+  // **bold**
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // *italic*
+  s = s.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>');
+  return s;
+}
+
+function renderMarkdown(md) {
+  const lines = String(md || '').split(/\r?\n/);
+  const out = [];
+  let inList = null; // 'ul' or 'ol'
+
+  const closeList = () => {
+    if (inList) {
+      out.push(`</${inList}>`);
+      inList = null;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    const ul = line.match(/^[-*•]\s+(.*)$/);
+    const ol = line.match(/^\d+\.\s+(.*)$/);
+    const quote = line.match(/^>\s?(.*)$/);
+    const hr = /^(-{3,}|\*{3,}|_{3,})$/.test(line);
+
+    if (h) {
+      closeList();
+      const lvl = Math.min(3, h[1].length + 1);
+      out.push(`<h${lvl}>${inlineMarkdown(h[2])}</h${lvl}>`);
+    } else if (ul) {
+      if (inList !== 'ul') { closeList(); out.push('<ul>'); inList = 'ul'; }
+      out.push(`<li>${inlineMarkdown(ul[1])}</li>`);
+    } else if (ol) {
+      if (inList !== 'ol') { closeList(); out.push('<ol>'); inList = 'ol'; }
+      out.push(`<li>${inlineMarkdown(ol[1])}</li>`);
+    } else if (quote) {
+      closeList();
+      out.push(`<blockquote>${inlineMarkdown(quote[1])}</blockquote>`);
+    } else if (hr) {
+      closeList();
+      out.push('<hr/>');
+    } else {
+      closeList();
+      out.push(`<p>${inlineMarkdown(line)}</p>`);
+    }
+  }
+  closeList();
+  return out.join('\n');
+}
 
 const PROVIDER_NAMES = {
   nemotron: 'NVIDIA Nemotron',
