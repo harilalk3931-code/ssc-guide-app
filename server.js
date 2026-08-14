@@ -88,6 +88,83 @@ app.get('/api/guide-notes', (req, res) => {
   }
 });
 
+// --- Extract MCQs from markdown files for the question bank ---
+function extractMCQsFromMarkdown(filename, content) {
+  const base = filename.replace('.md', '');
+  const topic = base.toLowerCase().replace(/\s+/g, '-');
+  const mcqs = [];
+  const blocks = content.split(/\n(?=\d+\.\s+\*\*)/);
+  for (const block of blocks) {
+    const match = block.match(
+      /^\d+\.\s+\*\*(.+?)\*\*\s*\n((?:\s*-\s+[A-D]\)\s+.+\n?)+)\s*-\s+\*\*Answer:\s*([A-D])\*\*\s*\n\s*-\s+Explanation:\s*(.+)/
+    );
+    if (match) {
+      const [, question, optionsBlock, answerLetter, explanation] = match;
+      const options = [];
+      const optionRegex = /- ([A-D]\)\s+.+)/g;
+      let optMatch;
+      while ((optMatch = optionRegex.exec(optionsBlock)) !== null) {
+        options.push(optMatch[1].replace(/^[A-D]\)\s*/, '').trim());
+      }
+      if (options.length === 4) {
+        const answerIndex = answerLetter.charCodeAt(0) - 65;
+        mcqs.push({
+          id: `${topic}-${mcqs.length + 1}`,
+          question: question.trim(),
+          options,
+          answer: options[answerIndex] || options[0],
+          answerLetter,
+          explanation: explanation.trim(),
+          topic,
+          difficulty: 'medium',
+          source: 'dataset',
+        });
+      }
+    }
+  }
+  return mcqs;
+}
+
+let cachedMCQs = null;
+function getAllMCQs() {
+  if (cachedMCQs) return cachedMCQs;
+  const all = [];
+  if (fs.existsSync(NOTES_DIR)) {
+    const files = fs.readdirSync(NOTES_DIR).filter((f) => f.endsWith('.md'));
+    for (const f of files) {
+      const content = fs.readFileSync(path.join(NOTES_DIR, f), 'utf8');
+      all.push(...extractMCQsFromMarkdown(f, content));
+    }
+  }
+  cachedMCQs = all;
+  console.log(`📚 Extracted ${all.length} MCQs from markdown files`);
+  return all;
+}
+
+app.get('/api/notes-mcqs', (req, res) => {
+  try {
+    const { topic, difficulty, search, limit } = req.query;
+    let mcqs = getAllMCQs();
+    if (topic && topic !== 'all') {
+      mcqs = mcqs.filter((q) => q.topic === topic);
+    }
+    if (difficulty && difficulty !== 'all') {
+      mcqs = mcqs.filter((q) => q.difficulty === difficulty);
+    }
+    if (search) {
+      const s = search.toLowerCase();
+      mcqs = mcqs.filter((q) => q.question.toLowerCase().includes(s) || q.explanation.toLowerCase().includes(s));
+    }
+    if (limit) {
+      mcqs = mcqs.slice(0, parseInt(limit));
+    }
+    const topics = [...new Set(getAllMCQs().map((q) => q.topic))];
+    res.json({ success: true, mcqs, total: getAllMCQs().length, topics });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // --- Shared Question Bank (JSON file store) ---
 const BANK_FILE = path.join(__dirname, 'data', 'questions-bank.json');
 
