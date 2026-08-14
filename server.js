@@ -488,12 +488,12 @@ Return ONLY a valid JSON array in this exact format:
     { maxTokens: 4000, temperature: 0.7 }
   );
 
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error('No valid JSON found in AI response');
+  // Parse JSON robustly: the model may wrap the array in prose like
+  // "Here are questions generated from wikipedia..." — extract the array.
+  const questions = extractJsonArray(content);
+  if (!questions) {
+    throw new Error('No valid JSON found in AI response. The model returned prose instead of JSON.');
   }
-
-  const questions = JSON.parse(jsonMatch[0]);
 
   return questions.map((q, i) => ({
     ...q,
@@ -503,6 +503,51 @@ Return ONLY a valid JSON array in this exact format:
     category,
     difficulty,
   }));
+}
+
+// Extract a JSON array from a possibly prose-wrapped AI response
+function extractJsonArray(content) {
+  if (!content) return null;
+
+  // Try parsing the whole content directly first
+  try {
+    const direct = JSON.parse(content);
+    if (Array.isArray(direct)) return direct;
+  } catch (e) { /* fall through */ }
+
+  // Try each '[' occurrence until one forms a valid top-level array
+  let searchFrom = 0;
+  while (searchFrom < content.length) {
+    let start = content.indexOf('[', searchFrom);
+    if (start === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < content.length; i++) {
+      const ch = content[i];
+      if (inString) {
+        if (escaped) { escaped = false; }
+        else if (ch === '\\') { escaped = true; }
+        else if (ch === '"') { inString = false; }
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '[') depth++;
+      else if (ch === ']') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end === -1) return null;
+
+    try {
+      const parsed = JSON.parse(content.slice(start, end + 1));
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) { /* try next '[' */ }
+
+    searchFrom = start + 1;
+  }
+
+  return null;
 }
 
 // --- Fetch real reference material from public web sources ---
