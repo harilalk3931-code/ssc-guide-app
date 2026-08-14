@@ -2,6 +2,24 @@ import { useState, useEffect, useMemo } from 'react';
 import Navbar from './Navbar';
 import { useStore } from '../store';
 
+// Text-to-speech utility
+function speakText(text) {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const clean = text.replace(/[#*_`>\-]/g, '').replace(/\n+/g, '. ').replace(/\s+/g, ' ').trim();
+  const u = new SpeechSynthesisUtterance(clean);
+  u.rate = 0.85;
+  u.pitch = 1;
+  u.lang = 'en-IN';
+  const voices = window.speechSynthesis.getVoices();
+  const indian = voices.find((v) => v.lang.startsWith('en-IN')) || voices.find((v) => v.lang.startsWith('en'));
+  if (indian) u.voice = indian;
+  window.speechSynthesis.speak(u);
+}
+function stopSpeech() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
+
 // Lightweight markdown renderer (no external deps needed on the server build)
 function escapeHtml(str) {
   return String(str || '')
@@ -650,6 +668,7 @@ export default function GuideNotes() {
   const [activeKeyId, setActiveKeyId] = useState(null);
   const [folderNotes, setFolderNotes] = useState(null); // subjects loaded from content/guide-notes
   const [notesSource, setNotesSource] = useState('builtin'); // 'builtin' | 'folder' | 'mixed'
+  const [ttsSection, setTtsSection] = useState(null);
 
   // Merge built-in notes with folder notes (folder subjects that aren't built-in are added)
   const allSubjects = useMemo(() => {
@@ -1004,6 +1023,18 @@ export default function GuideNotes() {
 
                 {isExpanded && (
                   <div className="px-5 pb-5 animate-slide-down border-t border-gray-100 dark:border-gray-700 prose prose-sm dark:prose-invert max-w-none">
+                    <div className="flex justify-end mb-3 pt-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (ttsSection === section.title) { stopSpeech(); setTtsSection(null); }
+                          else { setTtsSection(section.title); speakText(section.content); }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${ttsSection === section.title ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400 hover:bg-primary-200'}`}
+                      >
+                        {ttsSection === section.title ? '⏹️ Stop' : '🔊 Read Aloud'}
+                      </button>
+                    </div>
                     <div
                       className="prose prose-sm dark:prose-invert max-w-none markdown-body text-gray-700 dark:text-gray-300 leading-relaxed"
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(section.content) }}
