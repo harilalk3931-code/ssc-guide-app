@@ -1,17 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import Navbar from './Navbar';
-import { generateQuestionsWithAI, fetchSharedBank, AI_PROVIDERS, getProvider } from '../services/api';
+import { generateQuestionsWithAI, fetchSharedBank, AI_PROVIDERS, getProvider, testAIConnection } from '../services/api';
+
+// Text-to-speech utility — preloads voices for instant playback
+let cachedVoices = [];
+function loadVoices() {
+  if (!('speechSynthesis' in window)) return;
+  cachedVoices = window.speechSynthesis.getVoices();
+}
+if ('speechSynthesis' in window) {
+  loadVoices();
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+}
 
 function speakText(text) {
-  if (!('speechSynthesis' in window)) return;
+  if (!('speechSynthesis' in window)) { alert('Your browser does not support text-to-speech. Try Chrome or Edge.'); return; }
   window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
+  if (cachedVoices.length === 0) loadVoices();
+  const clean = text.replace(/[#*_`>\-]/g, '').replace(/\n+/g, '. ').replace(/\s+/g, ' ').trim();
+  const u = new SpeechSynthesisUtterance(clean.slice(0, 5000));
   u.rate = 0.9;
   u.pitch = 1;
   u.lang = 'en-IN';
-  const voices = window.speechSynthesis.getVoices();
-  const indian = voices.find((v) => v.lang.startsWith('en-IN')) || voices.find((v) => v.lang.startsWith('en'));
+  const indian = cachedVoices.find((v) => v.lang.startsWith('en-IN')) || cachedVoices.find((v) => v.lang.startsWith('en'));
   if (indian) u.voice = indian;
   window.speechSynthesis.speak(u);
 }
@@ -130,7 +142,7 @@ export default function QuestionBank() {
   };
 
   const loadBookmarks = () => {
-    const saved = localStorage.getItem('ssc-guide-bookmarks');
+    const saved = localStorage.getItem('prepmaster-bookmarks');
     if (saved) {
       try {
         setBookmarked(new Set(JSON.parse(saved)));
@@ -145,7 +157,7 @@ export default function QuestionBank() {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      localStorage.setItem('ssc-guide-bookmarks', JSON.stringify([...next]));
+      localStorage.setItem('prepmaster-bookmarks', JSON.stringify([...next]));
       return next;
     });
   };
@@ -230,6 +242,24 @@ export default function QuestionBank() {
   const getEffectiveProvider = () => {
     const active = getActiveKey();
     return active ? active.provider : provider;
+  };
+
+  const testMyAI = async () => {
+    const apiKey = getEffectiveApiKey();
+    const prov = getEffectiveProvider();
+    if (!apiKey) {
+      setApiKeyStatus('⚠️ Add an API key first');
+      setTimeout(() => setApiKeyStatus(null), 4000);
+      return;
+    }
+    setApiKeyStatus('🔄 Testing connection...');
+    const result = await testAIConnection({ apiKey, provider: prov });
+    if (result.success) {
+      setApiKeyStatus(`✅ ${result.message} (model: ${result.model})`);
+    } else {
+      setApiKeyStatus(`❌ ${result.error}`);
+    }
+    setTimeout(() => setApiKeyStatus(null), 8000);
   };
 
   const generateQuestions = async () => {
@@ -603,6 +633,7 @@ export default function QuestionBank() {
                     </div>
                   </div>
                   {apiKeyStatus && <p className="text-xs text-primary-600 dark:text-primary-400 mt-2 font-medium">{apiKeyStatus}</p>}
+                  <button onClick={testMyAI} className="mt-2 text-xs text-gray-500 dark:text-gray-400 underline hover:text-primary-500">🔌 Test Connection</button>
                 </div>
               )}
 
