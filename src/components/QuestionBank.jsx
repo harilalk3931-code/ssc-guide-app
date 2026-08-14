@@ -1,7 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import Navbar from './Navbar';
 import { generateQuestionsWithAI, fetchSharedBank, AI_PROVIDERS, getProvider } from '../services/api';
+
+function speakText(text) {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.9;
+  u.pitch = 1;
+  u.lang = 'en-IN';
+  const voices = window.speechSynthesis.getVoices();
+  const indian = voices.find((v) => v.lang.startsWith('en-IN')) || voices.find((v) => v.lang.startsWith('en'));
+  if (indian) u.voice = indian;
+  window.speechSynthesis.speak(u);
+}
+function stopSpeech() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
 
 const TOPICS = [
   { id: 'all', name: 'All Topics', icon: '📚' },
@@ -37,18 +53,21 @@ const GENERATE_TOPICS = [
 ];
 
 export default function QuestionBank() {
-  const { questions, setQuestions, setQuestionsError, userStats, updateUserStats } = useStore();
+  const { questions, setQuestions, setQuestionsError, userStats, updateUserStats, wrongBook, addToWrongBook, removeFromWrongBook, clearWrongBook } = useStore();
+  const [activeTab, setActiveTab] = useState('dataset'); // 'dataset' | 'ai' | 'wrongbook'
   const [selectedTopic, setSelectedTopic] = useState('all');
   const [selectedDifficulty, setSelectedDifficulty] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState('card'); // 'card' or 'list'
   const [showAnswer, setShowAnswer] = useState({});
   const [bookmarked, setBookmarked] = useState(new Set());
+  const [selectedAnswers, setSelectedAnswers] = useState({});
+  const [showExplanations, setShowExplanations] = useState({});
   const [loadingAi, setLoadingAi] = useState(false);
   const [genProgress, setGenProgress] = useState(null);
   const [genConfig, setGenConfig] = useState({ category: 'general-awareness', difficulty: 'medium', count: 25 });
-  const [selectedTopics, setSelectedTopics] = useState([]); // multi-topic selection for AI generation
-  const [savedKeys, setSavedKeys] = useState([]);           // [{ id, name, key, provider }]
+  const [selectedTopics, setSelectedTopics] = useState([]);
+  const [savedKeys, setSavedKeys] = useState([]);
   const [activeKeyId, setActiveKeyId] = useState(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
@@ -58,11 +77,40 @@ export default function QuestionBank() {
   const [provider, setProvider] = useState('nemotron');
   const [bankCount, setBankCount] = useState(0);
 
+  // Dataset MCQs from markdown files
+  const [datasetMcqs, setDatasetMcqs] = useState([]);
+  const [datasetTotal, setDatasetTotal] = useState(0);
+  const [datasetTopics, setDatasetTopics] = useState([]);
+  const [datasetLoading, setDatasetLoading] = useState(false);
+  const [datasetPage, setDatasetPage] = useState(0);
+  const [ttsSpeaking, setTtsSpeaking] = useState(null);
+  const MCQS_PER_PAGE = 30;
+
   // Load shared question bank, bookmarks, and saved API keys on mount
   useEffect(() => {
     loadSharedBank();
     loadBookmarks();
     loadSavedKeys();
+  }, []);
+
+  // Load dataset MCQs from markdown files
+  useEffect(() => {
+    (async () => {
+      setDatasetLoading(true);
+      try {
+        const res = await fetch('/api/notes-mcqs');
+        const data = await res.json();
+        if (data.success) {
+          setDatasetMcqs(data.mcqs || []);
+          setDatasetTotal(data.total || 0);
+          setDatasetTopics(data.topics || []);
+        }
+      } catch (e) {
+        console.error('Failed to load dataset MCQs:', e);
+      } finally {
+        setDatasetLoading(false);
+      }
+    })();
   }, []);
 
   const loadSharedBank = async (silent = false) => {
@@ -90,6 +138,16 @@ export default function QuestionBank() {
         setBookmarked(new Set());
       }
     }
+  };
+
+  const toggleBookmark = (id) => {
+    setBookmarked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      localStorage.setItem('ssc-guide-bookmarks', JSON.stringify([...next]));
+      return next;
+    });
   };
 
   const loadSavedKeys = () => {
@@ -301,6 +359,52 @@ export default function QuestionBank() {
     );
   };
 
+  // Dataset MCQ topic display names
+  const DATASET_TOPIC_LABELS = {
+    'history': '🏛️ History',
+    'art-culture': '🎨 Art & Culture',
+    'polity': '⚖️ Polity',
+    'geography': '🗺️ Geography',
+    'economics': '💰 Economics',
+    'science': '🔬 Science',
+    'environment': '🌿 Environment',
+    'computer': '💻 Computer',
+    'miscellaneous-gk': '📚 Miscellaneous GK',
+    'current-affairs': '📰 Current Affairs',
+  };
+
+  // Filter dataset MCQs
+  const filteredDataset = datasetMcqs
+    .filter((q) => {
+      if (selectedTopic !== 'all' && q.topic !== selectedTopic) return false;
+      if (selectedDifficulty !== 'all' && q.difficulty !== selectedDifficulty) return false;
+      if (searchQuery && !q.question.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      return true;
+    });
+
+  const pagedDataset = filteredDataset.slice(0, (datasetPage + 1) * MCQS_PER_PAGE);
+  const hasMoreDataset = pagedDataset.length < filteredDataset.length;
+
+  // Handle answer selection for interactive MCQs
+  const handleAnswerSelect = (qId, selectedOption, correctAnswer, question) => {
+    if (selectedAnswers[qId]) return; // already answered
+    setSelectedAnswers((prev) => ({ ...prev, [qId]: selectedOption }));
+    if (selectedOption !== correctAnswer) {
+      addToWrongBook({ ...question, selectedAnswer: selectedOption, id: qId });
+    }
+  };
+
+  const handleTTS = (text, qId) => {
+    if (ttsSpeaking === qId) {
+      stopSpeech();
+      setTtsSpeaking(null);
+    } else {
+      setTtsSpeaking(qId);
+      speakText(text);
+      setTimeout(() => setTtsSpeaking(null), 5000);
+    }
+  };
+
   return (
     <div className="min-h-screen pb-20 safe-area-inset-bottom">
       <Navbar />
@@ -309,11 +413,35 @@ export default function QuestionBank() {
         {/* Header */}
         <div className="mb-6 animate-fade-in">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Question Bank</h1>
-          <p className="text-gray-600 dark:text-gray-400">AI-generated questions from SSC CGL previous year patterns • Questions saved to the shared bank are visible to everyone visiting this site</p>
+          <p className="text-gray-600 dark:text-gray-400">
+            {datasetTotal > 0 ? `${datasetTotal} curated MCQs from SSC CGL study material` : 'Loading questions...'} • AI-generated questions from previous year patterns
+          </p>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex gap-2 mb-6 animate-fade-in stagger-1">
+          {[
+            { id: 'dataset', label: '📚 Study MCQs', desc: `${datasetTotal} curated questions` },
+            { id: 'ai', label: '🤖 AI Generate', desc: 'Generate new questions' },
+            { id: 'wrongbook', label: `❌ Wrong Book (${wrongBook.length})`, desc: 'Review mistakes' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 p-3 rounded-xl text-left transition-all ${
+                activeTab === tab.id
+                  ? 'bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-lg'
+                  : 'bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-50 dark:hover:bg-primary-900/20 border border-gray-200 dark:border-gray-700'
+              }`}
+            >
+              <p className="font-semibold text-sm">{tab.label}</p>
+              <p className={`text-xs ${activeTab === tab.id ? 'text-primary-100' : 'text-gray-400'}`}>{tab.desc}</p>
+            </button>
+          ))}
         </div>
 
         {/* Toolbar */}
-        <div className="glass-card p-4 mb-6 animate-fade-in stagger-1">
+        <div className="glass-card p-4 mb-6 animate-fade-in stagger-2">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="relative flex-1">
               <input
@@ -330,12 +458,17 @@ export default function QuestionBank() {
 
             <select
               value={selectedTopic}
-              onChange={(e) => setSelectedTopic(e.target.value)}
+              onChange={(e) => { setSelectedTopic(e.target.value); setDatasetPage(0); }}
               className="input-field min-w-[180px]"
             >
-              {TOPICS.map((topic) => (
+              <option value="all">📚 All Topics</option>
+              {datasetTopics.map((t) => (
+                <option key={t} value={t}>{DATASET_TOPIC_LABELS[t] || t}</option>
+              ))}
+              <option disabled>──────</option>
+              {TOPICS.filter((t) => t.id !== 'all' && !datasetTopics.includes(t.id)).map((topic) => (
                 <option key={topic.id} value={topic.id}>
-                  {topic.icon} {topic.name} {topic.count && `(${topic.count})`}
+                  {topic.icon} {topic.name}
                 </option>
               ))}
             </select>
@@ -369,262 +502,258 @@ export default function QuestionBank() {
             </div>
           </div>
 
-          {/* AI Generate Section */}
-          <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-            <div className="flex flex-wrap items-center gap-4">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">🤖 Generate Questions:</span>
-              <select
-                value={genConfig.category}
-                onChange={(e) => setGenConfig({...genConfig, category: e.target.value})}
-                className="input-field w-auto min-w-[160px] py-2 text-sm"
-              >
-                {GENERATE_TOPICS.map((t) => (
-                  <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
-                ))}
-              </select>
-              <select
-                value={genConfig.difficulty}
-                onChange={(e) => setGenConfig({...genConfig, difficulty: e.target.value})}
-                className="input-field w-auto min-w-[120px] py-2 text-sm"
-              >
-                <option value="easy">Easy</option>
-                <option value="medium">Medium</option>
-                <option value="hard">Hard</option>
-              </select>
-              <input
-                type="number"
-                min="5"
-                max="50"
-                value={genConfig.count}
-                onChange={(e) => setGenConfig({...genConfig, count: parseInt(e.target.value) || 25})}
-                className="input-field w-auto min-w-[70px] py-2 text-sm"
-              />
-              <button
-                onClick={generateQuestions}
-                disabled={loadingAi}
-                className="btn-primary py-2 px-4 text-sm"
-              >
-                {loadingAi ? 'Generating...' : '🎯 Generate & Save to Bank'}
-              </button>
-              <button
-                onClick={generateBatch}
-                disabled={loadingAi}
-                className="btn-primary py-2 px-4 text-sm bg-gradient-to-r from-purple-600 to-pink-600"
-                title="Generate 25 questions for each selected topic"
-              >
-                {loadingAi ? 'Generating...' : '🚀 Batch: 25 Qs × Selected Topics'}
-              </button>
-              <button
-                onClick={() => loadSharedBank(true)}
-                className="btn-secondary py-2 px-4 text-sm"
-                title="Reload the shared question bank"
-              >
-                🔄 Load Shared Bank
-              </button>
-              <button
-                onClick={() => setShowApiSettings(!showApiSettings)}
-                className={`btn-secondary py-2 px-3 text-sm ${savedKeys.length > 0 ? 'border-green-400' : ''}`}
-                title="AI settings: manage API keys + provider"
-              >
-                ⚙️ {getActiveKey() ? getActiveKey().name : 'API Keys'} {savedKeys.length > 0 ? `(${savedKeys.length})` : ''}
-              </button>
-            </div>
-
-            {/* Multi-topic selection */}
-            <div className="mt-3">
-              <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
-                🎯 Select topics likely to be asked in SSC CGL/CHSL (click to toggle; none selected = the single topic above):
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {GENERATE_TOPICS.map((t) => {
-                  const active = selectedTopics.includes(t.id);
-                  return (
-                    <button
-                      key={t.id}
-                      onClick={() => toggleTopic(t.id)}
-                      className={`px-3 py-1.5 rounded-full text-xs border transition-all ${
-                        active
-                          ? 'border-primary-500 bg-primary-500 text-white'
-                          : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'
-                      }`}
-                    >
-                      {t.icon} {t.label}
-                    </button>
-                  );
-                })}
+          {/* AI Generate Section (only when AI tab active) */}
+          {activeTab === 'ai' && (
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+              <div className="flex flex-wrap items-center gap-4">
+                <span className="text-sm font-medium text-gray-700 dark:text-gray-300">🤖 Generate Questions:</span>
+                <select
+                  value={genConfig.category}
+                  onChange={(e) => setGenConfig({...genConfig, category: e.target.value})}
+                  className="input-field w-auto min-w-[160px] py-2 text-sm"
+                >
+                  {GENERATE_TOPICS.map((t) => (
+                    <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+                  ))}
+                </select>
+                <select
+                  value={genConfig.difficulty}
+                  onChange={(e) => setGenConfig({...genConfig, difficulty: e.target.value})}
+                  className="input-field w-auto min-w-[120px] py-2 text-sm"
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+                <input
+                  type="number"
+                  min="5"
+                  max="50"
+                  value={genConfig.count}
+                  onChange={(e) => setGenConfig({...genConfig, count: parseInt(e.target.value) || 25})}
+                  className="input-field w-auto min-w-[70px] py-2 text-sm"
+                />
+                <button onClick={generateQuestions} disabled={loadingAi} className="btn-primary py-2 px-4 text-sm">
+                  {loadingAi ? 'Generating...' : '🎯 Generate & Save'}
+                </button>
+                <button onClick={generateBatch} disabled={loadingAi} className="btn-primary py-2 px-4 text-sm bg-gradient-to-r from-purple-600 to-pink-600">
+                  {loadingAi ? 'Generating...' : '🚀 Batch Generate'}
+                </button>
+                <button onClick={() => setShowApiSettings(!showApiSettings)} className="btn-secondary py-2 px-3 text-sm">
+                  ⚙️ {getActiveKey() ? getActiveKey().name : 'API Keys'}
+                </button>
               </div>
-            </div>
 
-            {/* AI Settings: Multi-key manager */}
-            {showApiSettings && (
-              <div className="mt-3 p-4 bg-gray-50 dark:bg-dark-800/50 rounded-xl border border-gray-200 dark:border-gray-700 animate-slide-down">
-                {/* Saved keys list */}
-                {savedKeys.length > 0 && (
-                  <div className="mb-4">
-                    <label className="label-text">Saved Keys (click to select active)</label>
-                    <div className="space-y-2 mt-2">
-                      {savedKeys.map((k) => (
-                        <div
-                          key={k.id}
-                          onClick={() => selectActiveKey(k.id)}
-                          className={`flex items-center justify-between gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                            activeKeyId === k.id
-                              ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                              : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 hover:border-primary-300'
-                          }`}
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${activeKeyId === k.id ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
-                            <div className="min-w-0">
-                              <p className="font-medium text-sm text-gray-900 dark:text-white truncate">{k.name}</p>
-                              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                                {getProvider(k.provider).name} • {k.key.slice(0, 8)}••••••••{k.key.slice(-4)}
-                              </p>
+              {/* Multi-topic selection */}
+              <div className="mt-3">
+                <p className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">🎯 Select topics for batch generation:</p>
+                <div className="flex flex-wrap gap-2">
+                  {GENERATE_TOPICS.map((t) => {
+                    const active = selectedTopics.includes(t.id);
+                    return (
+                      <button key={t.id} onClick={() => toggleTopic(t.id)}
+                        className={`px-3 py-1.5 rounded-full text-xs border transition-all ${active ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'}`}>
+                        {t.icon} {t.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* AI Settings */}
+              {showApiSettings && (
+                <div className="mt-3 p-4 bg-gray-50 dark:bg-dark-800/50 rounded-xl border border-gray-200 dark:border-gray-700 animate-slide-down">
+                  {savedKeys.length > 0 && (
+                    <div className="mb-4">
+                      <label className="label-text">Saved Keys</label>
+                      <div className="space-y-2 mt-2">
+                        {savedKeys.map((k) => (
+                          <div key={k.id} onClick={() => selectActiveKey(k.id)}
+                            className={`flex items-center justify-between gap-3 p-3 rounded-xl border cursor-pointer transition-all ${activeKeyId === k.id ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 hover:border-primary-300'}`}>
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${activeKeyId === k.id ? 'bg-primary-500' : 'bg-gray-300 dark:bg-gray-600'}`} />
+                              <div className="min-w-0">
+                                <p className="font-medium text-sm text-gray-900 dark:text-white truncate">{k.name}</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{getProvider(k.provider).name} • {k.key.slice(0, 8)}••••••••{k.key.slice(-4)}</p>
+                              </div>
                             </div>
+                            <button onClick={(e) => { e.stopPropagation(); removeApiKey(k.id); }} className="text-gray-400 hover:text-red-500 p-1">🗑️</button>
                           </div>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); removeApiKey(k.id); }}
-                            className="text-gray-400 hover:text-red-500 p-1 flex-shrink-0"
-                            title="Remove key"
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          </button>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="label-text">Key Name</label>
+                      <input type="text" value={newKeyName} onChange={(e) => setNewKeyName(e.target.value)} placeholder="e.g. My Nemotron" className="input-field mt-1" />
+                    </div>
+                    <div>
+                      <label className="label-text">AI Provider</label>
+                      <select value={newKeyProvider} onChange={(e) => setNewKeyProvider(e.target.value)} className="input-field mt-1">
+                        {AI_PROVIDERS.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                      </select>
                     </div>
                   </div>
-                )}
+                  <div className="mt-3">
+                    <label className="label-text">API Key</label>
+                    <div className="flex flex-col sm:flex-row gap-3 mt-1">
+                      <input type="password" value={newKeyValue} onChange={(e) => setNewKeyValue(e.target.value)} placeholder="Paste your API key..." className="input-field flex-1" />
+                      <button onClick={addApiKey} className="btn-primary py-2 px-4 text-sm whitespace-nowrap">➕ Add Key</button>
+                    </div>
+                  </div>
+                  {apiKeyStatus && <p className="text-xs text-primary-600 dark:text-primary-400 mt-2 font-medium">{apiKeyStatus}</p>}
+                </div>
+              )}
 
-                {/* Add new key */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="label-text">Key Name</label>
-                    <input
-                      type="text"
-                      value={newKeyName}
-                      onChange={(e) => setNewKeyName(e.target.value)}
-                      placeholder="e.g. My Nemotron, Work Groq..."
-                      className="input-field mt-1"
-                      autoComplete="off"
-                    />
+              {genProgress && (
+                <div className="mt-3 p-4 rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/10 animate-slide-down">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-primary-700 dark:text-primary-300">{genProgress.label}</span>
+                    <span className="text-sm text-primary-600 dark:text-primary-400">{genProgress.done}/{genProgress.total}</span>
                   </div>
-                  <div>
-                    <label className="label-text">AI Provider</label>
-                    <select
-                      value={newKeyProvider}
-                      onChange={(e) => setNewKeyProvider(e.target.value)}
-                      className="input-field mt-1"
-                    >
-                      {AI_PROVIDERS.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      🔗 Get a free key: <a href={getProvider(newKeyProvider).signup} target="_blank" rel="noreferrer" className="text-primary-600 underline">{getProvider(newKeyProvider).name}</a>
-                    </p>
+                  <div className="progress-bar">
+                    <div className="progress-fill" style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }} />
                   </div>
                 </div>
-                <div className="mt-3">
-                  <label className="label-text">API Key</label>
-                  <div className="flex flex-col sm:flex-row gap-3 mt-1">
-                    <input
-                      type="password"
-                      value={newKeyValue}
-                      onChange={(e) => setNewKeyValue(e.target.value)}
-                      placeholder="Paste your API key..."
-                      className="input-field flex-1"
-                      autoComplete="off"
-                    />
-                    <button onClick={addApiKey} className="btn-primary py-2 px-4 text-sm whitespace-nowrap">➕ Add Key</button>
-                  </div>
-                </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
-                  🔒 Keys are stored only in your browser (localStorage), shown masked, and sent directly to the AI provider — never exposed publicly. You can add multiple named keys and switch between them. Generated questions are saved to the shared bank so every visitor can see them.
-                  {apiKeyStatus && <span className="block mt-1 text-primary-600 dark:text-primary-400 font-medium">{apiKeyStatus}</span>}
-                </p>
-              </div>
-            )}
-
-            {/* Generation Progress */}
-            {genProgress && (
-              <div className="mt-3 p-4 rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/10 animate-slide-down">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-primary-700 dark:text-primary-300">
-                    {genProgress.label}
-                  </span>
-                  <span className="text-sm text-primary-600 dark:text-primary-400">
-                    {genProgress.done}/{genProgress.total}
-                  </span>
-                </div>
-                <div className="progress-bar">
-                  <div
-                    className="progress-fill"
-                    style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Results Count */}
         <div className="mb-4 animate-fade-in stagger-2">
           <p className="text-sm text-gray-600 dark:text-gray-400">
-            Showing <span className="font-semibold text-primary-600 dark:text-primary-400">{filteredQuestions.length}</span> of{' '}
-            <span className="font-semibold">{questions.length}</span> questions
-            {bankCount > 0 && <span className="ml-2">• 🌐 {bankCount} shared bank questions</span>}
-            {selectedTopic !== 'all' && <span className="ml-2">(filtered by {getTopicInfo(selectedTopic)})</span>}
+            {activeTab === 'dataset' && (
+              <>
+                Showing <span className="font-semibold text-primary-600 dark:text-primary-400">{filteredDataset.length}</span> of{' '}
+                <span className="font-semibold">{datasetTotal}</span> curated MCQs from study material
+              </>
+            )}
+            {activeTab === 'ai' && (
+              <>
+                Showing <span className="font-semibold text-primary-600 dark:text-primary-400">{filteredQuestions.length}</span> AI-generated questions
+                {bankCount > 0 && <span className="ml-2">• 🌐 {bankCount} shared</span>}
+              </>
+            )}
+            {activeTab === 'wrongbook' && (
+              <>
+                <span className="font-semibold text-red-600 dark:text-red-400">{wrongBook.length}</span> questions in wrong book
+              </>
+            )}
           </p>
-          <div className="flex flex-wrap gap-2 mt-2">
-            {GENERATE_TOPICS.slice(0, 10).map((t) => {
-              const count = (questions || []).filter((q) => q && ((q.topic === t.id) || (q.category === t.id))).length;
-              if (count === 0) return null;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setSelectedTopic(t.id)}
-                  className={`px-3 py-1 rounded-full text-xs border transition-all ${
-                    selectedTopic === t.id
-                      ? 'border-primary-500 bg-primary-500 text-white'
-                      : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'
-                  }`}
-                >
-                  {t.icon} {t.label} <span className="font-semibold">{count}</span>
-                </button>
-              );
-            })}
-          </div>
         </div>
 
-        {/* Questions List */}
-        {filteredQuestions.length === 0 ? (
-          <div className="glass-card p-12 text-center animate-fade-in">
-            <div className="text-6xl mb-4">🔍</div>
-            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No questions found</h3>
-            <p className="text-gray-600 dark:text-gray-400 mb-6">Add your AI API key, then generate fresh questions based on SSC CGL previous year patterns</p>
-            <div className="flex flex-wrap justify-center gap-3">
-              <button onClick={() => setShowApiSettings(true)} className="btn-primary">⚙️ Add API Key</button>
-              <button onClick={generateBatch} className="btn-primary bg-gradient-to-r from-purple-600 to-pink-600">🚀 Generate Full Question Bank</button>
-            </div>
-          </div>
-        ) : (
-          <div className={viewMode === 'card' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-3'}>
-            {filteredQuestions.map((question, index) => (
-              <QuestionCard
-                key={question.id}
-                question={question}
-                index={index}
-                showAnswer={showAnswer[question.id]}
-                onToggleAnswer={() => setShowAnswer((prev) => ({ ...prev, [question.id]: !prev[question.id] }))}
-                isBookmarked={bookmarked.has(question.id)}
-                onToggleBookmark={() => toggleBookmark(question.id)}
-                viewMode={viewMode}
-              />
-            ))}
-          </div>
+        {/* Content based on active tab */}
+        {activeTab === 'dataset' && (
+          <>
+            {datasetLoading ? (
+              <div className="glass-card p-12 text-center animate-fade-in">
+                <div className="text-6xl mb-4 animate-bounce">📚</div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Loading study MCQs...</h3>
+                <p className="text-gray-600 dark:text-gray-400">Extracting questions from {datasetTopics.length} subject files</p>
+              </div>
+            ) : pagedDataset.length === 0 ? (
+              <div className="glass-card p-12 text-center animate-fade-in">
+                <div className="text-6xl mb-4">🔍</div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No MCQs found</h3>
+                <p className="text-gray-600 dark:text-gray-400">Try changing the topic or difficulty filter</p>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-4">
+                  {pagedDataset.map((q, index) => (
+                    <DatasetMCQCard
+                      key={q.id}
+                      question={q}
+                      index={index}
+                      selectedAnswer={selectedAnswers[q.id]}
+                      onSelectAnswer={(opt) => handleAnswerSelect(q.id, opt, q.answer, q)}
+                      showExplanation={showExplanations[q.id]}
+                      onToggleExplanation={() => setShowExplanations((p) => ({ ...p, [q.id]: !p[q.id] }))}
+                      onTTS={() => handleTTS(`${q.question}. Options: ${q.options.join('. ')}. Correct answer: ${q.answer}. ${q.explanation}`, q.id)}
+                      ttsActive={ttsSpeaking === q.id}
+                    />
+                  ))}
+                </div>
+                {hasMoreDataset && (
+                  <div className="text-center mt-6">
+                    <button onClick={() => setDatasetPage((p) => p + 1)} className="btn-primary px-8">
+                      Load More ({pagedDataset.length} of {filteredDataset.length})
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </>
         )}
 
-        {/* Pagination would go here for large datasets */}
+        {activeTab === 'ai' && (
+          <>
+            {filteredQuestions.length === 0 ? (
+              <div className="glass-card p-12 text-center animate-fade-in">
+                <div className="text-6xl mb-4">🤖</div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No AI questions yet</h3>
+                <p className="text-gray-600 dark:text-gray-400 mb-6">Add an API key above, then generate fresh questions from live web sources</p>
+                <div className="flex flex-wrap justify-center gap-3">
+                  <button onClick={() => setShowApiSettings(true)} className="btn-primary">⚙️ Add API Key</button>
+                  <button onClick={generateBatch} className="btn-primary bg-gradient-to-r from-purple-600 to-pink-600">🚀 Generate Full Bank</button>
+                </div>
+              </div>
+            ) : (
+              <div className={viewMode === 'card' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-3'}>
+                {filteredQuestions.map((question, index) => (
+                  <QuestionCard
+                    key={question.id}
+                    question={question}
+                    index={index}
+                    showAnswer={showAnswer[question.id]}
+                    onToggleAnswer={() => setShowAnswer((prev) => ({ ...prev, [question.id]: !prev[question.id] }))}
+                    isBookmarked={bookmarked.has(question.id)}
+                    onToggleBookmark={() => toggleBookmark(question.id)}
+                    viewMode={viewMode}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'wrongbook' && (
+          <>
+            {wrongBook.length === 0 ? (
+              <div className="glass-card p-12 text-center animate-fade-in">
+                <div className="text-6xl mb-4">🎉</div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Wrong book is empty!</h3>
+                <p className="text-gray-600 dark:text-gray-400">Answer questions in Study MCQs tab — wrong answers are saved here for review</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-end mb-4">
+                  <button onClick={clearWrongBook} className="btn-secondary text-sm text-red-600">🗑️ Clear All</button>
+                </div>
+                <div className="space-y-4">
+                  {wrongBook.map((q, index) => (
+                    <DatasetMCQCard
+                      key={q.id + '-wb'}
+                      question={q}
+                      index={index}
+                      selectedAnswer={q.selectedAnswer}
+                      onSelectAnswer={() => {}}
+                      showExplanation={true}
+                      onToggleExplanation={() => {}}
+                      onTTS={() => handleTTS(`${q.question}. The correct answer is ${q.answer}. ${q.explanation}`, q.id)}
+                      ttsActive={ttsSpeaking === q.id}
+                      isWrongBook
+                      onRemove={() => removeFromWrongBook(q.id)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
       </main>
     </div>
   );
@@ -750,6 +879,84 @@ function QuestionCard({ question, index, showAnswer, onToggleAnswer, isBookmarke
             <span className="font-mono">{question.answer}</span>
           </div>
           <p className="text-sm text-gray-700 dark:text-gray-300"><strong>Explanation:</strong> {question.explanation}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DatasetMCQCard({ question, index, selectedAnswer, onSelectAnswer, showExplanation, onToggleExplanation, onTTS, ttsActive, isWrongBook, onRemove }) {
+  const isCorrect = selectedAnswer === question.answer;
+  const isAnswered = !!selectedAnswer;
+
+  return (
+    <div className={`glass-card-hover p-5 transition-all ${isWrongBook ? 'border-red-300 dark:border-red-800' : ''}`}>
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-medium text-gray-500 dark:text-gray-400">#{index + 1}</span>
+          <span className="badge badge-primary text-xs">{question.topic}</span>
+          <span className="text-xs text-gray-400 dark:text-gray-500">📖 Study Material</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={onTTS} className={`p-2 rounded-xl transition-colors ${ttsActive ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-primary-900/20'}`} title="Read aloud">
+            {ttsActive ? '🔊' : '🔈'}
+          </button>
+          {isWrongBook && onRemove && (
+            <button onClick={onRemove} className="p-2 rounded-xl text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20" title="Remove from wrong book">🗑️</button>
+          )}
+        </div>
+      </div>
+
+      <p className="font-medium text-gray-900 dark:text-white mb-4">{question.question}</p>
+
+      <div className="space-y-2 mb-4">
+        {question.options.map((option, optIndex) => {
+          let style = 'bg-gray-50 dark:bg-dark-800';
+          if (isAnswered) {
+            if (option === question.answer) style = 'bg-green-100 dark:bg-green-900/30 border-2 border-green-500';
+            else if (option === selectedAnswer && !isCorrect) style = 'bg-red-100 dark:bg-red-900/30 border-2 border-red-500';
+          }
+          return (
+            <button
+              key={optIndex}
+              onClick={() => onSelectAnswer(option)}
+              disabled={isAnswered}
+              className={`w-full text-left p-3 rounded-xl text-sm transition-all ${style} ${!isAnswered ? 'hover:bg-primary-50 dark:hover:bg-primary-900/20 cursor-pointer' : 'cursor-default'}`}
+            >
+              <span className="font-medium mr-2 text-primary-600 dark:text-primary-400">{String.fromCharCode(65 + optIndex)}.</span>
+              <span className={isAnswered && option === question.answer ? 'font-semibold text-green-700 dark:text-green-400' : isAnswered && option === selectedAnswer && !isCorrect ? 'font-semibold text-red-700 dark:text-red-400' : ''}>
+                {option}
+              </span>
+              {isAnswered && option === question.answer && <span className="ml-2 text-green-600">✓</span>}
+              {isAnswered && option === selectedAnswer && !isCorrect && <span className="ml-2 text-red-600">✗</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {isAnswered && (
+        <div className={`p-4 rounded-xl border animate-slide-down ${isCorrect ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'}`}>
+          <div className={`flex items-center gap-2 mb-2 ${isCorrect ? 'text-green-800 dark:text-green-400' : 'text-red-800 dark:text-red-400'}`}>
+            <span>{isCorrect ? '✅' : '❌'}</span>
+            <span className="font-semibold">{isCorrect ? 'Correct!' : `Wrong! Correct answer: ${question.answer}`}</span>
+          </div>
+          <button onClick={onToggleExplanation} className="text-sm text-primary-600 dark:text-primary-400 underline mb-2">
+            {showExplanation ? 'Hide explanation' : 'Show explanation'}
+          </button>
+          {showExplanation && (
+            <p className="text-sm text-gray-700 dark:text-gray-300 mt-2">{question.explanation}</p>
+          )}
+        </div>
+      )}
+
+      {!isAnswered && (
+        <button onClick={onToggleExplanation} className="text-sm text-gray-500 dark:text-gray-400 underline">
+          {showExplanation ? 'Hide explanation' : 'Show explanation without answering'}
+        </button>
+      )}
+      {showExplanation && !isAnswered && (
+        <div className="mt-2 p-3 bg-gray-50 dark:bg-dark-800/50 rounded-xl text-sm text-gray-700 dark:text-gray-300">
+          {question.explanation}
         </div>
       )}
     </div>
