@@ -1,7 +1,7 @@
 {
-  "name": "SSC CGL Guide - Question Bank & Test Creator",
-  "short_name": "SSC Guide",
-  "description": "Complete SSC CGL Tier-I preparation app by Harilal K - question bank, test creator, syllabus tracker, day counter, checklist, and study notes. Works offline on mobile and desktop.",
+  "name": "PrepMaster - Exam Preparation Platform",
+  "short_name": "PrepMaster",
+  "description": "Complete exam preparation platform by Harilal K - question bank, test creator, syllabus tracker, study notes, and more. Works offline.",
   "author": "Harilal K <harilalk.931@gmail.com>",
   "start_url": "/",
   "display": "standalone",
@@ -28,14 +28,14 @@
     {
       "name": "Question Bank",
       "short_name": "Questions",
-      "description": "Browse SSC CGL question bank by topic",
+      "description": "Browse question bank by topic",
       "url": "/questions",
       "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
     },
     {
       "name": "Create Test",
       "short_name": "Test",
-      "description": "Create 25-question 15-minute topic-wise tests",
+      "description": "Create topic-wise practice tests",
       "url": "/test-creator",
       "icons": [{ "src": "pwa-192x192.png", "sizes": "192x192" }]
     },
