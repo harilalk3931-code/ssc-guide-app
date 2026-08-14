@@ -165,6 +165,50 @@ app.get('/api/notes-mcqs', (req, res) => {
   }
 });
 
+// Content addition helper — shows format and current files
+app.get('/api/content-guide', (req, res) => {
+  const files = fs.existsSync(NOTES_DIR) ? fs.readdirSync(NOTES_DIR).filter((f) => f.endsWith('.md')) : [];
+  res.json({
+    success: true,
+    currentFiles: files,
+    format: `# Subject Name
+
+<!-- icon: 📘 | color: from-blue-500 to-cyan-500 -->
+
+> Brief description of this subject for SSC CGL
+
+## Chapter/Topic Name
+
+1. **Question text here?**
+   - A) Option A
+   - B) Option B
+   - C) Option C
+   - D) Option D
+   - **Answer: C**
+   - Explanation: Detailed explanation (4-6 sentences). First explain why C is correct with specific facts. Then explain why A is wrong, why B is wrong, and why D is wrong with correct facts for each.
+
+2. **Next question?**
+   ...`,
+    instructions: [
+      '1. Create a .md file named after the subject (e.g., Reasoning.md, English.md, Maths.md)',
+      '2. First line: # Subject Name',
+      '3. Second line: <!-- icon: 📘 | color: from-blue-500 to-cyan-500 -->',
+      '4. Sections start with ## (these become chapter tabs)',
+      '5. MCQs start with N. **Question?** followed by options and answer',
+      '6. Upload the file to content/guide-notes/ folder on GitHub',
+      '7. The server auto-reads all .md files from that folder',
+      '8. No server restart needed — just push to GitHub and Render redeploys',
+    ],
+    tips: [
+      'Use ## for chapter headings (these appear as expandable sections)',
+      'Each MCQ needs exactly 4 options (A, B, C, D)',
+      'Put **Answer: X** on its own line after the options',
+      'Explanation should be 4-6 sentences: state correct fact, explain why wrong options are wrong',
+      'The file is automatically merged with existing subjects',
+    ],
+  });
+});
+
 // --- Shared Question Bank (JSON file store) ---
 const BANK_FILE = path.join(__dirname, 'data', 'questions-bank.json');
 
@@ -226,6 +270,47 @@ app.post('/api/bank/questions', (req, res) => {
   res.json({ success: true, added: result.added, total: result.total });
 });
 
+// Test AI connectivity — returns which provider/model works
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const { apiKey, provider } = req.body;
+    const key = apiKey || process.env.NEMOTRON_API_KEY;
+    if (!key) return res.json({ success: false, error: 'No API key provided. Add one in Settings.' });
+    const prov = provider || 'nemotron';
+    const cfg = AI_PROVIDERS[prov];
+    if (!cfg) return res.json({ success: false, error: `Unknown provider: ${prov}` });
+
+    let lastError = '';
+    for (const model of cfg.models) {
+      try {
+        let ok = false;
+        if (cfg.type === 'gemini') {
+          const url = `${cfg.endpoint}/${model}:generateContent?key=${key}`;
+          const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Say "hello" in one word.' }] }], generationConfig: { maxOutputTokens: 10 } }),
+          });
+          ok = r.ok;
+          if (!ok) lastError = `${model}: ${r.status}`;
+        } else {
+          const r = await fetch(cfg.endpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Say "hello" in one word.' }], max_tokens: 10 }),
+          });
+          ok = r.ok;
+          if (!ok) lastError = `${model}: ${r.status} ${(await r.text()).slice(0, 200)}`;
+        }
+        if (ok) return res.json({ success: true, provider: prov, model, message: `✅ ${cfg.name} is working` });
+      } catch (e) { lastError = `${model}: ${e.message}`; }
+    }
+    res.json({ success: false, error: `${cfg.name} failed: ${lastError}` });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // --- Generate questions with AI (multi-provider)
 app.post('/api/ai/generate', async (req, res) => {
   try {
@@ -256,7 +341,7 @@ app.post('/api/ai/generate', async (req, res) => {
     console.error('AI generation error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate questions with AI',
+      error: `AI generation failed: ${error.message}. Make sure your API key is valid and the provider is reachable.`,
       details: error.message,
     });
   }
@@ -278,7 +363,7 @@ app.post('/api/ai/notes', async (req, res) => {
     if (!key) {
       return res.status(500).json({
         success: false,
-        error: 'AI API key not configured. Add one in Settings.',
+        error: 'No API key found. Click ⚙️ in Question Bank, add a free key from build.nvidia.com (Nemotron) or aistudio.google.com (Gemini), then try again.',
       });
     }
 
@@ -535,7 +620,11 @@ Difficulty: ${difficulty} - ${difficultyMap[difficulty] || difficultyMap.medium}
 Requirements:
 - Each question must have exactly 4 options
 - One correct answer that exactly matches one option
-- Detailed explanation (2-3 sentences) for each question
+- For each question, write a DETAILED explanation (4-6 sentences minimum):
+  1. First sentence: state the correct answer clearly
+  2. Explain WHY the correct answer is correct with specific facts, dates, names, or details
+  3. Then explain WHY each wrong option is wrong, with the correct fact for that option
+  4. Add any related exam tips or mnemonics if relevant
 - Questions should be India-centric and relevant to SSC CGL exam pattern
 - Base questions ONLY on real facts found in the "REFERENCE MATERIAL" below and on standard SSC CGL / CHSL previous-year question paper topics
 - For Current Affairs: use the latest real news headlines provided below
@@ -552,7 +641,7 @@ Return ONLY a valid JSON array in this exact format:
     "question": "Question text here?",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "answer": "Option A",
-    "explanation": "Explanation why Option A is correct and others are not."
+    "explanation": "Correct answer is Option A because [detailed reason with facts]. Option B is wrong because [reason]. Option C is wrong because [reason]. Option D is wrong because [reason]."
   }
 ]
 `;
@@ -562,7 +651,7 @@ Return ONLY a valid JSON array in this exact format:
     apiKey,
     'You are an expert SSC CGL exam question generator. Generate high-quality, exam-oriented multiple choice questions in valid JSON format only. Base every question strictly on real facts from the provided reference material and known SSC CGL/CHSL previous-year paper topics.',
     prompt,
-    { maxTokens: 4000, temperature: 0.7 }
+    { maxTokens: 6000, temperature: 0.7 }
   );
 
   // Parse JSON robustly: the model may wrap the array in prose like
