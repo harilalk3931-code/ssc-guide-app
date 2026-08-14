@@ -173,3 +173,122 @@
     padding-top: env(safe-area-inset-top);
   }
 }
+
+/* ========== KEYFRAME ANIMATIONS ========== */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes bounce-in {
+  0% { transform: scale(0.3); opacity: 0; }
+  50% { transform: scale(1.05); }
+  70% { transform: scale(0.9); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(79, 70, 229, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(79, 70, 229, 0.6); }
+}
+
+.animate-fade-in { animation: fadeIn 0.5s ease-out both; }
+.animate-slide-up { animation: slideUp 0.4s ease-out both; }
+.animate-slide-down { animation: slideDown 0.3s ease-out both; }
+.animate-scale-in { animation: scaleIn 0.3s ease-out both; }
+.animate-bounce-in { animation: bounce-in 0.6s ease-out both; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+.animate-glow { animation: glow 2s ease-in-out infinite; }
+
+/* Shimmer loading effect */
+.shimmer {
+  background: linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.15) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ========== INTERACTIVE CARD EFFECTS ========== */
+.glass-card-hover {
+  @apply glass-card transition-all duration-300;
+}
+.glass-card-hover:hover {
+  @apply shadow-2xl -translate-y-1;
+  box-shadow: 0 20px 40px -12px rgba(79, 70, 229, 0.15);
+}
+
+/* Button hover ripple effect */
+.btn-primary {
+  @apply relative overflow-hidden;
+}
+.btn-primary::after {
+  content: '';
+  @apply absolute inset-0 bg-white/0 transition-all duration-300;
+}
+.btn-primary:hover::after {
+  @apply bg-white/10;
+}
+
+/* Card press effect */
+.glass-card:active {
+  transform: scale(0.995);
+}
+
+/* Option hover lift */
+button[class*="rounded-xl"][class*="border-2"]:not([disabled]):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.1);
+}
+
+/* Nav link underline animation */
+nav a[class*="rounded-xl"]::after {
+  content: '';
+  @apply block w-0 h-0.5 bg-primary-500 transition-all duration-300 mx-auto mt-0.5;
+}
+nav a[class*="rounded-xl"]:hover::after,
+nav a[class*="active"]::after {
+  @apply w-6;
+}
+
+/* Badge pulse on hover */
+.badge:hover {
+  animation: pulse 0.6s ease-in-out;
+}
+
+/* ========== MOBILE OPTIMIZATIONS ========== */
+@media (max-width: 640px) {
+  .glass-card { @apply rounded-xl; }
+  .glass-card-hover { @apply rounded-xl; }
+  .btn-primary { @apply px-4 py-2.5 text-sm; }
+  .btn-secondary { @apply px-4 py-2.5 text-sm; }
+  .section-title { @apply text-xl; }
+}
