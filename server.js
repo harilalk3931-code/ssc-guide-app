@@ -21,6 +21,73 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// --- Guide Notes (markdown files in content/guide-notes) ---
+const NOTES_DIR = path.join(__dirname, 'content', 'guide-notes');
+
+const SUBJECT_META = {
+  'history': { name: 'History', icon: '📜', color: 'from-amber-500 to-orange-500' },
+  'art-culture': { name: 'Art & Culture', icon: '🎭', color: 'from-pink-500 to-rose-500' },
+  'polity': { name: 'Polity', icon: '⚖️', color: 'from-indigo-500 to-blue-500' },
+  'geography': { name: 'Geography', icon: '🗺️', color: 'from-green-500 to-teal-500' },
+  'economics': { name: 'Economics', icon: '💹', color: 'from-cyan-500 to-sky-500' },
+  'science': { name: 'Science', icon: '🔬', color: 'from-violet-500 to-purple-500' },
+  'environment': { name: 'Environment', icon: '🌿', color: 'from-emerald-500 to-lime-500' },
+  'computer': { name: 'Computer', icon: '💻', color: 'from-slate-500 to-gray-600' },
+  'miscellaneous-gk': { name: 'Miscellaneous GK', icon: '📚', color: 'from-fuchsia-500 to-pink-600' },
+  'current-affairs': { name: 'Current Affairs', icon: '📰', color: 'from-red-500 to-orange-500' },
+};
+
+// Parse a guide-notes markdown file into { title, sections: [{ title, content }] }
+function parseGuideNotesFile(filename, raw) {
+  const lines = raw.split(/\r?\n/);
+  const sections = [];
+  let current = null;
+
+  for (const line of lines) {
+    const heading = line.match(/^##\s+(.+)$/);
+    if (heading) {
+      if (current) sections.push(current);
+      current = { title: heading[1].trim(), content: '' };
+      continue;
+    }
+    if (current) {
+      current.content += (current.content ? '\n' : '') + line;
+    }
+  }
+  if (current) sections.push(current);
+
+  const base = path.basename(filename, '.md').toLowerCase();
+  const meta = SUBJECT_META[base] || { name: base, icon: '📘', color: 'from-blue-500 to-cyan-500' };
+  return {
+    id: base,
+    name: meta.name,
+    icon: meta.icon,
+    color: meta.color,
+    sections: sections.filter((s) => s.title && s.content.trim()),
+    totalMCQs: sections.reduce((acc, s) => acc + (s.content.match(/^\s*- \*\*Answer:/gm) || []).length, 0),
+  };
+}
+
+app.get('/api/guide-notes', (req, res) => {
+  try {
+    if (!fs.existsSync(NOTES_DIR)) {
+      return res.json({ success: true, subjects: [], source: 'folder' });
+    }
+    const files = fs.readdirSync(NOTES_DIR).filter((f) => f.endsWith('.md'));
+    const subjects = files
+      .map((f) => {
+        const raw = fs.readFileSync(path.join(NOTES_DIR, f), 'utf8');
+        return parseGuideNotesFile(f, raw);
+      })
+      .filter((s) => s.sections.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ success: true, subjects, source: 'folder' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // --- Shared Question Bank (JSON file store) ---
 const BANK_FILE = path.join(__dirname, 'data', 'questions-bank.json');
 
@@ -270,9 +337,10 @@ const AI_PROVIDERS = {
     type: 'openai',
     endpoint: 'https://integrate.api.nvidia.com/v1/chat/completions',
     models: [
-      'nvidia/llama-3.1-nemotron-70b-instruct',
-      'nvidia/nemotron-4-340b-instruct',
+      'nvidia/llama-3.3-nemotron-super-49b-v1',
       'meta/llama-3.1-70b-instruct',
+      'nvidia/nemotron-4-340b-instruct',
+      'nvidia/llama-3.1-nemotron-70b-instruct',
     ],
     color: '#76B900',
   },
