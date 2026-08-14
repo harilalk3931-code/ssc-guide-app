@@ -1,117 +1,206 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { selectQuestions, shuffleArray } from '../services/api';
+import { fetchSharedBank, fetchDatasetMCQs, shuffleArray, selectQuestions } from '../services/api';
 import { jsPDF } from 'jspdf';
 import Navbar from './Navbar';
 
-const TEST_TOPICS = [
-  { id: 'mixed', name: 'Full Syllabus (Mixed)', icon: '🎯', sections: ['general-awareness', 'reasoning', 'quant', 'english'] },
-  { id: 'general-awareness', name: 'General Awareness', icon: '🌍', sections: ['general-awareness', 'current-affairs', 'history', 'geography', 'polity', 'economy', 'science'] },
-  { id: 'reasoning', name: 'Reasoning', icon: '🧩', sections: ['reasoning'] },
-  { id: 'quant', name: 'Quantitative Aptitude', icon: '🔢', sections: ['quant'] },
-  { id: 'english', name: 'English Comprehension', icon: '📝', sections: ['english'] },
+const SECTIONS = [
+  { id: 'general-awareness', name: 'General Awareness', icon: '🌍', color: 'from-blue-500 to-cyan-500', topics: ['general-awareness', 'current-affairs', 'history', 'geography', 'polity', 'economy', 'science', 'art-culture', 'environment', 'computer', 'miscellaneous-gk'] },
+  { id: 'reasoning', name: 'Reasoning', icon: '🧩', color: 'from-purple-500 to-pink-500', topics: ['reasoning'] },
+  { id: 'quant', name: 'Quantitative Aptitude', icon: '🔢', color: 'from-green-500 to-emerald-500', topics: ['quant'] },
+  { id: 'english', name: 'English Comprehension', icon: '📝', color: 'from-orange-500 to-red-500', topics: ['english'] },
 ];
 
-const TEST_CONFIGS = [
-  { id: 'tier1-full', name: 'Full Tier-I Mock (100 Q, 60 min)', questions: 100, time: 60, icon: '📋' },
-  { id: 'tier1-section', name: 'Sectional Test (25 Q, 15 min)', questions: 25, time: 15, icon: '⚡' },
-  { id: 'quick', name: 'Quick Practice (10 Q, 6 min)', questions: 10, time: 6, icon: '⏱️' },
-  { id: 'custom', name: 'Custom Test', questions: 25, time: 15, icon: '⚙️' },
+const TEST_MODES = [
+  { id: 'full-mock', name: 'Full Tier-I Mock', desc: '100 questions · 60 minutes · 4 sections × 25 each', icon: '📋', questions: 100, time: 60, sections: true },
+  { id: 'sectional', name: 'Sectional Test', desc: '25 questions · 15 minutes · Single section', icon: '⚡', questions: 25, time: 15, sections: false },
+  { id: 'quick', name: 'Quick Practice', desc: '10 questions · 6 minutes · Mixed topics', icon: '⏱️', questions: 10, time: 6, sections: false },
+  { id: 'custom', name: 'Custom Test', desc: 'Choose your own settings', icon: '⚙️', questions: 25, time: 15, sections: false },
 ];
 
 export default function TestCreator() {
-  const { questions, currentTest, setCurrentTest, clearCurrentTest, addTestToHistory, userStats, updateUserStats } = useStore();
+  const { questions, setQuestions, addTestToHistory, userStats, updateUserStats } = useStore();
   const [step, setStep] = useState('config'); // config, test, results
-  const [selectedTopic, setSelectedTopic] = useState('mixed');
-  const [selectedConfig, setSelectedConfig] = useState('tier1-section');
-  const [customQuestions, setCustomQuestions] = useState(25);
+  const [testMode, setTestMode] = useState('sectional');
+  const [selectedSection, setSelectedSection] = useState('general-awareness');
+  const [customCount, setCustomCount] = useState(25);
   const [customTime, setCustomTime] = useState(15);
+  const [datasetMcqs, setDatasetMcqs] = useState([]);
+  const [allQuestions, setAllQuestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  // Test state
   const [testQuestions, setTestQuestions] = useState([]);
+  const [currentSection, setCurrentSection] = useState(0);
+  const [currentQ, setCurrentQ] = useState(0);
   const [answers, setAnswers] = useState({});
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [marked, setMarked] = useState(new Set());
   const [timeLeft, setTimeLeft] = useState(0);
   const [submitted, setSubmitted] = useState(false);
   const [score, setScore] = useState(null);
-  const [timerInterval, setTimerInterval] = useState(null);
   const [showReview, setShowReview] = useState(false);
+  const timerRef = useRef(null);
 
-  // Timer effect
+  // Load all questions on mount
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const [bank, mcqRes] = await Promise.all([
+          fetchSharedBank().catch(() => []),
+          fetch('/api/notes-mcqs').then((r) => r.json()).catch(() => ({ mcqs: [] })),
+        ]);
+        const mcqs = mcqRes.mcqs || [];
+        setDatasetMcqs(mcqs);
+        // Merge: bank questions + dataset MCQs (deduplicated by question text)
+        const seen = new Set();
+        const merged = [];
+        for (const q of [...mcqs, ...bank]) {
+          const key = (q.question || '').toLowerCase().trim();
+          if (key && !seen.has(key)) {
+            seen.add(key);
+            merged.push({
+              id: q.id || `q-${merged.length}`,
+              question: q.question,
+              options: q.options || [],
+              answer: q.answer,
+              explanation: q.explanation || '',
+              topic: q.topic || q.category || 'general',
+              difficulty: q.difficulty || 'medium',
+              source: q.source || 'bank',
+            });
+          }
+        }
+        setAllQuestions(merged);
+        setQuestions(merged);
+      } catch (e) {
+        console.error('Failed to load questions:', e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  // Timer
   useEffect(() => {
     if (step === 'test' && timeLeft > 0 && !submitted) {
-      const interval = setInterval(() => {
+      timerRef.current = setInterval(() => {
         setTimeLeft((prev) => {
           if (prev <= 1) {
-            clearInterval(interval);
+            clearInterval(timerRef.current);
             handleSubmit();
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
-      setTimerInterval(interval);
-      return () => clearInterval(interval);
+      return () => clearInterval(timerRef.current);
     }
-    if (timerInterval) clearInterval(timerInterval);
-  }, [timeLeft, submitted, step]);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [step, submitted]);
 
-  const generateTest = () => {
-    let config = TEST_CONFIGS.find(c => c.id === selectedConfig);
-    if (!config) config = TEST_CONFIGS[1];
+  const getQuestionsForSection = (sectionId) => {
+    const section = SECTIONS.find((s) => s.id === sectionId);
+    if (!section) return [];
+    return allQuestions.filter((q) => section.topics.includes(q.topic));
+  };
 
-    const qCount = selectedConfig === 'custom' ? customQuestions : config.questions;
-    const time = selectedConfig === 'custom' ? customTime : config.time;
+  const startTest = () => {
+    const mode = TEST_MODES.find((m) => m.id === testMode);
+    let questions = [];
+    let timeMinutes = customTime;
 
-    let filteredQuestions = questions;
-    if (selectedTopic !== 'mixed') {
-      const topicConfig = TEST_TOPICS.find(t => t.id === selectedTopic);
-      if (topicConfig) {
-        filteredQuestions = questions.filter(q => topicConfig.sections.includes(q.topic || q.category));
+    if (testMode === 'full-mock') {
+      // 25 questions from each section
+      for (const section of SECTIONS) {
+        const sectionQs = getQuestionsForSection(section.id);
+        questions.push(...selectQuestions(sectionQs, 25));
       }
+      timeMinutes = 60;
+    } else if (testMode === 'sectional') {
+      const sectionQs = getQuestionsForSection(selectedSection);
+      questions = selectQuestions(sectionQs, Math.min(25, sectionQs.length));
+      timeMinutes = 15;
+    } else if (testMode === 'quick') {
+      questions = selectQuestions(allQuestions, 10);
+      timeMinutes = 6;
+    } else {
+      // custom
+      if (selectedSection === 'mixed') {
+        questions = selectQuestions(allQuestions, customCount);
+      } else {
+        const sectionQs = getQuestionsForSection(selectedSection);
+        questions = selectQuestions(sectionQs, Math.min(customCount, sectionQs.length));
+      }
+      timeMinutes = customTime;
     }
 
-    if (filteredQuestions.length < qCount) {
-      alert(`Not enough questions available. Only ${filteredQuestions.length} questions for this topic.`);
+    if (questions.length === 0) {
+      alert('No questions available for this selection. Generate questions in Question Bank first.');
       return;
     }
 
-    const selected = selectQuestions(filteredQuestions, qCount);
-    setTestQuestions(selected);
+    setTestQuestions(questions);
+    setCurrentSection(0);
+    setCurrentQ(0);
     setAnswers({});
-    setCurrentQuestionIndex(0);
-    setTimeLeft(time * 60);
+    setMarked(new Set());
+    setTimeLeft(timeMinutes * 60);
     setSubmitted(false);
     setScore(null);
     setShowReview(false);
-    setCurrentTest({ topic: selectedTopic, config: selectedConfig, questions: selected });
     setStep('test');
   };
 
-  const handleAnswer = (questionIndex, option) => {
-    if (!submitted) {
-      setAnswers((prev) => ({ ...prev, [questionIndex]: option }));
-    }
+  const handleAnswer = (qIndex, option) => {
+    if (submitted) return;
+    setAnswers((prev) => ({ ...prev, [qIndex]: option }));
   };
 
-  const goToQuestion = (index) => {
-    setCurrentQuestionIndex(index);
+  const toggleMark = (qIndex) => {
+    setMarked((prev) => {
+      const next = new Set(prev);
+      if (next.has(qIndex)) next.delete(qIndex);
+      else next.add(qIndex);
+      return next;
+    });
   };
 
   const handleSubmit = () => {
     setSubmitted(true);
-    if (timerInterval) clearInterval(timerInterval);
+    if (timerRef.current) clearInterval(timerRef.current);
 
     let correct = 0;
+    let wrong = 0;
+    let unattempted = 0;
+    const sectionScores = {};
+
+    SECTIONS.forEach((s) => { sectionScores[s.id] = { correct: 0, wrong: 0, total: 0 }; });
+
     testQuestions.forEach((q, i) => {
-      if (answers[i] && answers[i].toLowerCase() === q.answer.toLowerCase()) {
+      const userAns = answers[i];
+      const section = SECTIONS.find((s) => s.topics.includes(q.topic)) || SECTIONS[0];
+      sectionScores[section.id].total++;
+
+      if (!userAns) {
+        unattempted++;
+      } else if (userAns === q.answer) {
         correct++;
+        sectionScores[section.id].correct++;
+      } else {
+        wrong++;
+        sectionScores[section.id].wrong++;
       }
     });
 
-    const percentage = ((correct / testQuestions.length) * 100).toFixed(1);
-    const newScore = { correct, total: testQuestions.length, percentage: parseFloat(percentage) };
+    // SSC CGL marking: +2 correct, -0.5 wrong
+    const marks = (correct * 2) - (wrong * 0.5);
+    const maxMarks = testQuestions.length * 2;
+    const percentage = ((marks / maxMarks) * 100).toFixed(1);
+
+    const newScore = { correct, wrong, unattempted, total: testQuestions.length, marks: marks.toFixed(1), maxMarks, percentage: parseFloat(percentage), sectionScores };
     setScore(newScore);
 
-    // Update user stats
     updateUserStats({
       totalQuestionsAttempted: userStats.totalQuestionsAttempted + testQuestions.length,
       totalCorrect: userStats.totalCorrect + correct,
@@ -119,447 +208,413 @@ export default function TestCreator() {
       averageScore: ((userStats.averageScore * userStats.totalTestsTaken) + parseFloat(percentage)) / (userStats.totalTestsTaken + 1),
     });
 
-    // Save to history
     addTestToHistory({
       id: Date.now().toString(),
       date: new Date().toISOString(),
-      topic: selectedTopic,
-      config: selectedConfig,
+      mode: testMode,
+      section: selectedSection,
       questions: testQuestions.length,
-      time: selectedConfig === 'custom' ? customTime : TEST_CONFIGS.find(c => c.id === selectedConfig)?.time || 15,
+      time: testMode === 'full-mock' ? 60 : testMode === 'quick' ? 6 : testMode === 'sectional' ? 15 : customTime,
       score: newScore,
       answers,
     });
 
-    setShowReview(true);
+    setStep('results');
   };
 
   const retryTest = () => {
     setAnswers({});
+    setMarked(new Set());
     setSubmitted(false);
     setScore(null);
-    setShowReview(false);
-    setCurrentQuestionIndex(0);
-    const config = TEST_CONFIGS.find(c => c.id === selectedConfig);
-    setTimeLeft((config?.time || 15) * 60);
+    setCurrentQ(0);
+    const mode = TEST_MODES.find((m) => m.id === testMode);
+    const time = testMode === 'full-mock' ? 60 : testMode === 'quick' ? 6 : testMode === 'sectional' ? 15 : customTime;
+    setTimeLeft(time * 60);
     setTestQuestions(shuffleArray(testQuestions));
+    setStep('test');
   };
 
-  const newTest = () => {
-    clearCurrentTest();
-    setStep('config');
-    setTestQuestions([]);
-    setAnswers({});
-    setCurrentQuestionIndex(0);
-    setSubmitted(false);
-    setScore(null);
-    setShowReview(false);
+  const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
+
+  const getTopicLabel = (topic) => {
+    const labels = {
+      'general-awareness': 'GA', 'current-affairs': 'CA', 'history': 'Hist', 'geography': 'Geo',
+      'polity': 'Pol', 'economy': 'Eco', 'science': 'Sci', 'art-culture': 'Art',
+      'environment': 'Env', 'computer': 'Comp', 'miscellaneous-gk': 'Misc',
+      'reasoning': 'Reason', 'quant': 'Quant', 'english': 'Eng',
+    };
+    return labels[topic] || topic.slice(0, 4);
   };
 
-  const downloadPDF = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text('SSC CGL Test Results', 20, 20);
-    doc.setFontSize(12);
-    doc.text(`Date: ${new Date().toLocaleDateString()}`, 20, 30);
-    doc.text(`Topic: ${TEST_TOPICS.find(t => t.id === selectedTopic)?.name || selectedTopic}`, 20, 38);
-    doc.text(`Score: ${score?.percentage}% (${score?.correct}/${score?.total})`, 20, 46);
-    doc.text(`Time: ${Math.floor((selectedConfig === 'custom' ? customTime : TEST_CONFIGS.find(c => c.id === selectedConfig)?.time || 15) * 60 - timeLeft) / 60} min`, 20, 54);
-
-    let y = 70;
-    testQuestions.forEach((q, i) => {
-      if (y > 270) { doc.addPage(); y = 20; }
-      const userAns = answers[i] || 'Not answered';
-      const isCorrect = userAns.toLowerCase() === q.answer.toLowerCase();
-      doc.setFontSize(10);
-      doc.text(`${i + 1}. ${q.question}`, 20, y);
-      y += 8;
-      doc.text(`Your Answer: ${userAns} ${isCorrect ? '✓' : '✗'}`, 25, y);
-      y += 6;
-      doc.text(`Correct: ${q.answer}`, 25, y);
-      y += 6;
-      if (q.explanation) {
-        const lines = doc.splitTextToSize(`Explanation: ${q.explanation}`, 170);
-        doc.text(lines, 25, y);
-        y += lines.length * 5;
-      }
-      y += 5;
-    });
-
-    doc.save(`SSC_CGL_Test_${new Date().toISOString().split('T')[0]}.pdf`);
-  };
-
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const progress = testQuestions.length > 0 ? (Object.keys(answers).length / testQuestions.length) * 100 : 0;
-
+  // ========== CONFIG SCREEN ==========
   if (step === 'config') {
+    const totalAvailable = allQuestions.length;
+    const sectionCounts = SECTIONS.map((s) => ({
+      ...s,
+      count: getQuestionsForSection(s.id).length,
+    }));
+
     return (
       <div className="min-h-screen pb-20 safe-area-inset-bottom">
         <Navbar />
         <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="mb-8 animate-fade-in">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Create Test</h1>
-            <p className="text-gray-600 dark:text-gray-400">Generate topic-wise tests for SSC CGL Tier-I preparation</p>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Create Exam</h1>
+            <p className="text-gray-600 dark:text-gray-400">Practice like the real SSC CGL examination</p>
           </div>
 
-          <div className="glass-card p-6 animate-fade-in stagger-1">
-            <h2 className="section-title mb-4">Select Test Type</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-              {TEST_CONFIGS.map((config) => (
-                <button
-                  key={config.id}
-                  onClick={() => setSelectedConfig(config.id)}
-                  className={`p-5 rounded-2xl border-2 transition-all text-left ${
-                    selectedConfig === config.id
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                      : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-3xl">{config.icon}</span>
-                    <span className="font-semibold text-gray-900 dark:text-white">{config.name}</span>
-                  </div>
-                  <div className="flex gap-4 text-sm text-gray-600 dark:text-gray-400">
-                    <span>📝 {config.questions} Questions</span>
-                    <span>⏱️ {config.time} Minutes</span>
-                  </div>
-                </button>
-              ))}
+          {loading ? (
+            <div className="glass-card p-12 text-center animate-fade-in">
+              <div className="text-6xl mb-4 animate-bounce">📚</div>
+              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Loading question bank...</h3>
+              <p className="text-gray-600 dark:text-gray-400 mt-2">Combining {datasetMcqs.length} study MCQs + shared bank questions</p>
             </div>
-
-            {selectedConfig === 'custom' && (
-              <div className="grid grid-cols-2 gap-4 mb-6 p-4 bg-gray-50 dark:bg-dark-800/50 rounded-xl">
-                <div>
-                  <label className="label-text">Number of Questions</label>
-                  <input
-                    type="number"
-                    min="5"
-                    max="100"
-                    value={customQuestions}
-                    onChange={(e) => setCustomQuestions(Math.min(100, Math.max(5, parseInt(e.target.value) || 5)))}
-                    className="input-field"
-                  />
+          ) : (
+            <>
+              {/* Question Bank Stats */}
+              <div className="glass-card p-6 mb-6 animate-fade-in stagger-1">
+                <h2 className="section-title mb-4">📊 Question Bank</h2>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {sectionCounts.map((s) => (
+                    <div key={s.id} className={`p-4 rounded-xl bg-gradient-to-br ${s.color} text-white text-center`}>
+                      <div className="text-2xl mb-1">{s.icon}</div>
+                      <div className="text-2xl font-bold">{s.count}</div>
+                      <div className="text-xs opacity-80">{s.name}</div>
+                    </div>
+                  ))}
                 </div>
-                <div>
-                  <label className="label-text">Time (Minutes)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="120"
-                    value={customTime}
-                    onChange={(e) => setCustomTime(Math.min(120, Math.max(1, parseInt(e.target.value) || 1)))}
-                    className="input-field"
-                  />
+                <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-3">Total: {totalAvailable} questions available</p>
+              </div>
+
+              {/* Test Modes */}
+              <div className="glass-card p-6 mb-6 animate-fade-in stagger-2">
+                <h2 className="section-title mb-4">🎯 Exam Mode</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {TEST_MODES.map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => setTestMode(mode.id)}
+                      className={`p-5 rounded-2xl border-2 transition-all duration-300 text-left group ${
+                        testMode === mode.id
+                          ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 shadow-lg shadow-primary-500/10'
+                          : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-700 hover:shadow-md'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-3xl group-hover:scale-110 transition-transform">{mode.icon}</span>
+                        <div>
+                          <span className="font-semibold text-gray-900 dark:text-white block">{mode.name}</span>
+                          <span className="text-sm text-gray-500 dark:text-gray-400">{mode.desc}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
-            )}
 
-            <h2 className="section-title mb-4">Select Topic</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
-              {TEST_TOPICS.map((topic) => (
-                <button
-                  key={topic.id}
-                  onClick={() => setSelectedTopic(topic.id)}
-                  className={`p-4 rounded-xl border-2 transition-all text-left ${
-                    selectedTopic === topic.id
-                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                      : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-2xl">{topic.icon}</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{topic.name}</span>
+              {/* Section Selection (for sectional/custom) */}
+              {testMode !== 'full-mock' && testMode !== 'quick' && (
+                <div className="glass-card p-6 mb-6 animate-fade-in stagger-3">
+                  <h2 className="section-title mb-4">📂 Select Section</h2>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    {testMode === 'custom' && (
+                      <button
+                        onClick={() => setSelectedSection('mixed')}
+                        className={`p-4 rounded-xl border-2 transition-all ${
+                          selectedSection === 'mixed' ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-primary-300'
+                        }`}
+                      >
+                        <span className="text-2xl">🎯</span>
+                        <span className="font-medium text-gray-900 dark:text-white block mt-1">Mixed</span>
+                      </button>
+                    )}
+                    {SECTIONS.map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => setSelectedSection(s.id)}
+                        className={`p-4 rounded-xl border-2 transition-all ${
+                          selectedSection === s.id ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-primary-300'
+                        }`}
+                      >
+                        <span className="text-2xl">{s.icon}</span>
+                        <span className="font-medium text-gray-900 dark:text-white block mt-1">{s.name}</span>
+                        <span className="text-xs text-gray-500">{getQuestionsForSection(s.id).length} Qs</span>
+                      </button>
+                    ))}
                   </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {topic.id === 'mixed' ? 'All sections combined' : `${topic.sections.length} sub-topics`}
-                  </p>
-                </button>
-              ))}
-            </div>
+                </div>
+              )}
 
-            <div className="glass-card p-4 mb-6 bg-gradient-to-r from-primary-50 to-primary-100 dark:from-primary-900/20 dark:to-primary-900/10 border-primary-200">
-              <h3 className="font-semibold text-primary-800 dark:text-primary-300 mb-2">Available Questions</h3>
-              <p className="text-sm text-primary-700 dark:text-primary-400">
-                {(() => {
-                  let filtered = questions;
-                  if (selectedTopic !== 'mixed') {
-                    const topicConfig = TEST_TOPICS.find(t => t.id === selectedTopic);
-                    if (topicConfig) filtered = questions.filter(q => topicConfig.sections.includes(q.topic || q.category));
-                  }
-                  return `${filtered.length} questions available for "${TEST_TOPICS.find(t => t.id === selectedTopic)?.name || selectedTopic}"`;
-                })()}
-              </p>
-            </div>
+              {/* Custom settings */}
+              {testMode === 'custom' && (
+                <div className="glass-card p-6 mb-6 animate-fade-in stagger-4">
+                  <h2 className="section-title mb-4">⚙️ Custom Settings</h2>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label-text">Questions</label>
+                      <input type="number" min="5" max="100" value={customCount} onChange={(e) => setCustomCount(Math.min(100, Math.max(5, parseInt(e.target.value) || 5)))} className="input-field" />
+                    </div>
+                    <div>
+                      <label className="label-text">Time (minutes)</label>
+                      <input type="number" min="1" max="120" value={customTime} onChange={(e) => setCustomTime(Math.min(120, Math.max(1, parseInt(e.target.value) || 1)))} className="input-field" />
+                    </div>
+                  </div>
+                </div>
+              )}
 
-            <button
-              onClick={generateTest}
-              disabled={questions.length === 0}
-              className="w-full btn-primary py-4 text-lg"
-            >
-              {questions.length === 0 ? 'Load Questions First' : `Start ${TEST_CONFIGS.find(c => c.id === selectedConfig)?.name || 'Test'}`}
-            </button>
-          </div>
+              {/* Start Button */}
+              <button onClick={startTest} disabled={allQuestions.length === 0}
+                className="w-full btn-primary py-4 text-lg animate-fade-in stagger-5 group">
+                {allQuestions.length === 0 ? '⚠️ No questions available — go to Question Bank first' : (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="group-hover:scale-110 transition-transform">🚀</span>
+                    Start {TEST_MODES.find((m) => m.id === testMode)?.name}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
         </main>
       </div>
     );
   }
 
+  // ========== TEST SCREEN ==========
   if (step === 'test') {
-    const currentQuestion = testQuestions[currentQuestionIndex];
+    const q = testQuestions[currentQ];
     const answeredCount = Object.keys(answers).length;
+    const markedCount = marked.size;
+    const progress = testQuestions.length > 0 ? (answeredCount / testQuestions.length) * 100 : 0;
+    const sectionInfo = SECTIONS.find((s) => s.topics.includes(q?.topic)) || SECTIONS[0];
 
     return (
-      <div className="min-h-screen pb-20 safe-area-inset-bottom">
-        {/* Fixed Header */}
-        <div className="fixed top-0 left-0 right-0 z-40 glass-card border-b border-gray-200 dark:border-gray-700">
-          <div className="max-w-7xl mx-auto px-4 py-3">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <h2 className="font-bold text-gray-900 dark:text-white">
-                  {TEST_CONFIGS.find(c => c.id === selectedConfig)?.name || 'Test'}
-                </h2>
-                <span className="badge badge-primary">{TEST_TOPICS.find(t => t.id === selectedTopic)?.name || selectedTopic}</span>
+      <div className="min-h-screen bg-gray-50 dark:bg-dark-900">
+        {/* Fixed Top Bar */}
+        <div className="fixed top-0 left-0 right-0 z-50 bg-white/95 dark:bg-dark-900/95 backdrop-blur-xl border-b border-gray-200 dark:border-gray-700 shadow-sm">
+          <div className="max-w-7xl mx-auto px-4 py-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-purple-600 flex items-center justify-center">
+                  <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L3 7v2h18V7L12 2zM5 11v6h3v-6H5zm5.5 0v6h3v-6h-3zm5.5 0v6h3v-6h-3zM3 19v2h18v-2H3z"/></svg>
+                </div>
+                <span className="font-bold text-gray-900 dark:text-white hidden sm:block">PrepMaster</span>
+                <span className="badge badge-primary">{sectionInfo.name}</span>
               </div>
-              <div className="flex items-center gap-6">
-                <div className={`flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-lg ${
+              <div className="flex items-center gap-4">
+                <div className={`flex items-center gap-2 px-4 py-2 rounded-xl font-mono text-lg font-bold ${
                   timeLeft < 60 ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 animate-pulse' :
                   timeLeft < 300 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
                   'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                 }`}>
                   ⏱️ {formatTime(timeLeft)}
                 </div>
-                <div className="hidden sm:block">
-                  <div className="progress-bar w-48">
-                    <div className="progress-fill" style={{ width: `${progress}%` }} />
-                  </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 text-right mt-1">{answeredCount}/{testQuestions.length} answered</p>
+                <div className="hidden md:block text-right">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white">{answeredCount}/{testQuestions.length}</div>
+                  <div className="progress-bar w-32 mt-1"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
                 </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="pt-20 pb-8 px-4">
-          {/* Question Navigator */}
-          <div className="max-w-3xl mx-auto mb-6 glass-card p-4">
-            <div className="flex items-center justify-between mb-3">
-              <span className="font-medium text-gray-900 dark:text-white">Question Palette</span>
-              <button
-                onClick={() => setShowReview(!showReview)}
-                className="text-sm text-primary-600 dark:text-primary-400 hover:underline"
-              >
-                {showReview ? 'Hide' : 'Show'} Review
-              </button>
-            </div>
-            <div className="grid grid-cols-10 gap-2" role="tablist" aria-label="Question navigator">
-              {testQuestions.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => goToQuestion(i)}
-                  role="tab"
-                  aria-selected={i === currentQuestionIndex}
-                  className={`w-10 h-10 rounded-lg font-medium transition-all ${
-                    i === currentQuestionIndex
-                      ? 'bg-primary-500 text-white shadow-lg'
-                      : answers[i]
-                        ? 'bg-green-500 text-white'
-                        : 'bg-gray-100 dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-100 dark:hover:bg-primary-900/30'
-                  }`}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Question Card */}
-          <div className="max-w-3xl mx-auto animate-slide-up">
-            {currentQuestion && (
-              <div className="glass-card-hover p-6">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <span className="badge badge-primary mb-2">Q{currentQuestionIndex + 1} of {testQuestions.length}</span>
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{currentQuestion.question}</h3>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`badge px-2 py-1 ${currentQuestion.difficulty === 'easy' ? 'bg-green-100 text-green-800' : currentQuestion.difficulty === 'hard' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                      {currentQuestion.difficulty?.charAt(0).toUpperCase() + currentQuestion.difficulty?.slice(1) || 'Medium'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {currentQuestion.options?.map((option, optIndex) => (
-                    <button
-                      key={optIndex}
-                      onClick={() => handleAnswer(currentQuestionIndex, option)}
-                      disabled={submitted}
-                      className={`w-full p-4 rounded-xl text-left border-2 transition-all ${
-                        submitted
-                          ? option === currentQuestion.answer
-                            ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
-                            : answers[currentQuestionIndex] === option
-                              ? 'border-red-500 bg-red-50 dark:bg-red-900/20'
-                              : 'border-gray-200 dark:border-gray-700'
-                          : answers[currentQuestionIndex] === option
-                            ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                            : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-700'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-medium ${
-                          submitted
-                            ? option === currentQuestion.answer
-                              ? 'border-green-500 bg-green-500 text-white'
-                              : answers[currentQuestionIndex] === option
-                                ? 'border-red-500 bg-red-500 text-white'
-                                : 'border-gray-300 dark:border-gray-600'
-                            : answers[currentQuestionIndex] === option
-                              ? 'border-primary-500 bg-primary-500 text-white'
-                              : 'border-gray-300 dark:border-gray-600'
-                        }`}>
-                          {String.fromCharCode(65 + optIndex)}
-                        </div>
-                        <span className="text-gray-900 dark:text-white">{option}</span>
-                        {submitted && option === currentQuestion.answer && (
-                          <span className="ml-auto text-green-600 dark:text-green-400 font-semibold">✓ Correct</span>
-                        )}
-                        {submitted && answers[currentQuestionIndex] === option && option !== currentQuestion.answer && (
-                          <span className="ml-auto text-red-600 dark:text-red-400 font-semibold">✗ Your Answer</span>
-                        )}
-                      </div>
+        <div className="pt-16 pb-8 px-4">
+          <div className="max-w-6xl mx-auto flex gap-4">
+            {/* Question Navigator Sidebar */}
+            <div className="hidden lg:block w-64 flex-shrink-0">
+              <div className="sticky top-20 glass-card p-4">
+                <h3 className="font-semibold text-gray-900 dark:text-white mb-3 text-sm">Question Palette</h3>
+                <div className="grid grid-cols-5 gap-1.5 mb-4">
+                  {testQuestions.map((_, i) => (
+                    <button key={i} onClick={() => setCurrentQ(i)}
+                      className={`w-full aspect-square rounded-lg text-xs font-medium transition-all ${
+                        i === currentQ ? 'bg-primary-500 text-white shadow-lg scale-110' :
+                        answers[i] ? 'bg-green-500 text-white' :
+                        marked.has(i) ? 'bg-yellow-400 text-white' :
+                        'bg-gray-100 dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-100'
+                      }`}>
+                      {i + 1}
                     </button>
                   ))}
                 </div>
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-primary-500" /> Current</div>
+                  <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-green-500" /> Answered ({answeredCount})</div>
+                  <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-yellow-400" /> Marked ({markedCount})</div>
+                  <div className="flex items-center gap-2"><div className="w-3 h-3 rounded bg-gray-200 dark:bg-gray-700" /> Unvisited ({testQuestions.length - answeredCount - markedCount})</div>
+                </div>
+                <button onClick={handleSubmit} className="w-full btn-primary mt-4 py-2.5 text-sm">
+                  ✅ Submit Exam
+                </button>
+              </div>
+            </div>
 
-                {submitted && currentQuestion.explanation && (
-                  <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
-                    <div className="flex items-center gap-2 text-blue-800 dark:text-blue-400 mb-2">
-                      <span>💡</span>
-                      <span className="font-semibold">Explanation</span>
+            {/* Question Area */}
+            <div className="flex-1 animate-slide-up">
+              {q && (
+                <div className="glass-card-hover p-6">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <span className="w-10 h-10 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center font-bold text-primary-700 dark:text-primary-300">
+                        {currentQ + 1}
+                      </span>
+                      <div>
+                        <span className="text-sm text-gray-500 dark:text-gray-400">Question {currentQ + 1} of {testQuestions.length}</span>
+                        <span className={`ml-2 badge text-xs ${q.difficulty === 'easy' ? 'bg-green-100 text-green-800' : q.difficulty === 'hard' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                          {q.difficulty?.charAt(0).toUpperCase() + q.difficulty?.slice(1) || 'Medium'}
+                        </span>
+                      </div>
                     </div>
-                    <p className="text-sm text-gray-700 dark:text-gray-300">{currentQuestion.explanation}</p>
+                    <button onClick={() => toggleMark(currentQ)}
+                      className={`p-2 rounded-xl transition-all ${marked.has(currentQ) ? 'bg-yellow-100 text-yellow-600' : 'bg-gray-100 dark:bg-dark-800 text-gray-400 hover:text-yellow-500'}`}>
+                      {marked.has(currentQ) ? '🔖' : '📌'}
+                    </button>
                   </div>
-                )}
 
-                {/* Navigation */}
-                <div className="mt-6 flex items-center justify-between">
-                  <button
-                    onClick={() => goToQuestion(currentQuestionIndex - 1)}
-                    disabled={currentQuestionIndex === 0 || submitted}
-                    className="btn-secondary"
-                  >
-                    ← Previous
-                  </button>
-                  <div className="flex gap-2">
-                    {currentQuestionIndex < testQuestions.length - 1 ? (
-                      <button
-                        onClick={() => goToQuestion(currentQuestionIndex + 1)}
-                        disabled={submitted}
-                        className="btn-primary"
-                      >
-                        Next →
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-6 leading-relaxed">{q.question}</h3>
+
+                  <div className="space-y-3">
+                    {q.options.map((opt, oi) => (
+                      <button key={oi} onClick={() => handleAnswer(currentQ, opt)}
+                        className={`w-full p-4 rounded-xl text-left border-2 transition-all duration-200 ${
+                          answers[currentQ] === opt
+                            ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 shadow-md'
+                            : 'border-gray-200 dark:border-gray-700 hover:border-primary-300 dark:hover:border-primary-700 hover:bg-gray-50 dark:hover:bg-dark-800/50'
+                        }`}>
+                        <div className="flex items-center gap-3">
+                          <div className={`w-9 h-9 rounded-full border-2 flex items-center justify-center font-bold text-sm flex-shrink-0 transition-all ${
+                            answers[currentQ] === opt
+                              ? 'border-primary-500 bg-primary-500 text-white'
+                              : 'border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-400'
+                          }`}>
+                            {String.fromCharCode(65 + oi)}
+                          </div>
+                          <span className="text-gray-900 dark:text-white">{opt}</span>
+                        </div>
                       </button>
-                    ) : (
-                      <button
-                        onClick={submitted ? retryTest : handleSubmit}
-                        className={submitted ? 'btn-secondary' : 'btn-primary'}
-                      >
-                        {submitted ? '🔄 Retry Test' : '✅ Submit Test'}
+                    ))}
+                  </div>
+
+                  {/* Navigation */}
+                  <div className="mt-8 flex items-center justify-between">
+                    <button onClick={() => setCurrentQ(Math.max(0, currentQ - 1))} disabled={currentQ === 0} className="btn-secondary">
+                      ← Previous
+                    </button>
+                    <div className="flex gap-2">
+                      <button onClick={() => toggleMark(currentQ)} className="btn-secondary text-sm">
+                        {marked.has(currentQ) ? '🔖 Unmark' : '📌 Mark'}
                       </button>
-                    )}
+                      {currentQ < testQuestions.length - 1 ? (
+                        <button onClick={() => setCurrentQ(currentQ + 1)} className="btn-primary">Next →</button>
+                      ) : (
+                        <button onClick={handleSubmit} className="btn-primary bg-gradient-to-r from-green-600 to-emerald-600">✅ Submit</button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // Results Step
+  // ========== RESULTS SCREEN ==========
   return (
     <div className="min-h-screen pb-20 safe-area-inset-bottom">
       <Navbar />
-      <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-16">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-16">
         <div className="animate-fade-in">
+          {/* Score Card */}
           <div className="glass-card-hover p-8 text-center mb-8">
-            <div className="text-6xl mb-4">{score.percentage >= 70 ? '🎉' : score.percentage >= 50 ? '👍' : '📚'}</div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Test Completed!</h1>
-            <p className="text-gray-600 dark:text-gray-400 mb-6">{TEST_CONFIGS.find(c => c.id === selectedConfig)?.name} • {TEST_TOPICS.find(t => t.id === selectedTopic)?.name}</p>
+            <div className="text-7xl mb-4">{score.percentage >= 70 ? '🎉' : score.percentage >= 50 ? '👍' : '📚'}</div>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Exam Completed!</h1>
 
-            <div className="inline-flex items-center gap-4 mb-6 p-6 bg-gradient-to-r from-primary-500 to-primary-600 rounded-2xl text-white">
+            <div className="inline-flex items-center gap-6 my-6 p-6 bg-gradient-to-r from-primary-600 to-purple-600 rounded-2xl text-white shadow-xl">
               <div className="text-center">
-                <div className="text-4xl font-bold">{score.percentage}%</div>
-                <div className="text-sm opacity-90">Score</div>
+                <div className="text-4xl font-bold">{score.marks}</div>
+                <div className="text-sm opacity-80">Marks</div>
+                <div className="text-xs opacity-60">out of {score.maxMarks}</div>
               </div>
               <div className="w-px h-16 bg-white/30" />
-              <div className="text-center px-6">
-                <div className="text-3xl font-bold text-green-100">{score.correct}</div>
-                <div className="text-sm opacity-90">Correct</div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-green-200">{score.correct}</div>
+                <div className="text-sm opacity-80">Correct</div>
               </div>
               <div className="w-px h-16 bg-white/30" />
-              <div className="text-center px-6">
-                <div className="text-3xl font-bold text-red-100">{score.total - score.correct}</div>
-                <div className="text-sm opacity-90">Wrong</div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-red-200">{score.wrong}</div>
+                <div className="text-sm opacity-80">Wrong</div>
               </div>
               <div className="w-px h-16 bg-white/30" />
-              <div className="text-center px-6">
-                <div className="text-3xl font-bold">{score.total}</div>
-                <div className="text-sm opacity-90">Total</div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-yellow-200">{score.unattempted}</div>
+                <div className="text-sm opacity-80">Skipped</div>
               </div>
             </div>
 
+            {/* Section-wise breakdown */}
+            {score.sectionScores && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                {SECTIONS.map((s) => {
+                  const ss = score.sectionScores[s.id];
+                  if (!ss || ss.total === 0) return null;
+                  return (
+                    <div key={s.id} className={`p-4 rounded-xl bg-gradient-to-br ${s.color} text-white`}>
+                      <div className="text-lg font-bold">{ss.correct}/{ss.total}</div>
+                      <div className="text-xs opacity-80">{s.name}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="flex flex-wrap justify-center gap-3">
-              <button onClick={retryTest} className="btn-primary">🔄 Retry Test</button>
-              <button onClick={newTest} className="btn-secondary">📝 New Test</button>
-              <button onClick={downloadPDF} className="btn-secondary">📄 Download PDF</button>
+              <button onClick={retryTest} className="btn-primary">🔄 Retry</button>
+              <button onClick={() => setStep('config')} className="btn-secondary">📝 New Exam</button>
+              <button onClick={() => {
+                const doc = new jsPDF();
+                doc.setFontSize(18); doc.text('PrepMaster - Exam Results', 20, 20);
+                doc.setFontSize(12);
+                doc.text(`Score: ${score.marks}/${score.maxMarks} (${score.percentage}%)`, 20, 32);
+                doc.text(`Correct: ${score.correct} | Wrong: ${score.wrong} | Skipped: ${score.unattempted}`, 20, 40);
+                let y = 55;
+                testQuestions.forEach((q, i) => {
+                  if (y > 270) { doc.addPage(); y = 20; }
+                  const ua = answers[i] || 'Not answered';
+                  const ok = ua === q.answer;
+                  doc.setFontSize(9);
+                  doc.text(`${i+1}. ${q.question.slice(0, 80)}`, 20, y); y += 6;
+                  doc.text(`Your: ${ua.slice(0, 50)} ${ok ? '✓' : '✗'} | Correct: ${q.answer}`, 25, y); y += 8;
+                });
+                doc.save(`PrepMaster_Exam_${new Date().toISOString().split('T')[0]}.pdf`);
+              }} className="btn-secondary">📄 Download PDF</button>
             </div>
           </div>
 
-          {/* Question Review */}
+          {/* Answer Review */}
           <div className="glass-card p-6">
-            <h2 className="section-title mb-4">Answer Review</h2>
-            <div className="space-y-4 max-h-96 overflow-y-auto">
+            <h2 className="section-title mb-4">📋 Answer Review</h2>
+            <div className="space-y-3 max-h-[32rem] overflow-y-auto pr-2">
               {testQuestions.map((q, i) => {
-                const userAnswer = answers[i] || 'Not answered';
-                const isCorrect = userAnswer.toLowerCase() === q.answer.toLowerCase();
+                const ua = answers[i] || 'Not answered';
+                const ok = ua === q.answer;
+                const section = SECTIONS.find((s) => s.topics.includes(q.topic)) || SECTIONS[0];
                 return (
-                  <div
-                    key={i}
-                    className={`p-4 rounded-xl border ${
-                      isCorrect ? 'border-green-200 bg-green-50 dark:bg-green-900/10' : 'border-red-200 bg-red-50 dark:bg-red-900/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="badge badge-primary">Q{i + 1}</span>
-                      <span className={`badge ${isCorrect ? 'badge-success' : 'badge-danger'}`}>
-                        {isCorrect ? '✅ Correct' : '❌ Incorrect'}
-                      </span>
-                      <span className="badge badge-primary text-xs">{q.topic || 'General'}</span>
+                  <div key={i} className={`p-4 rounded-xl border transition-all ${ok ? 'border-green-200 bg-green-50/50 dark:bg-green-900/10' : 'border-red-200 bg-red-50/50 dark:bg-red-900/10'}`}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-7 h-7 rounded-lg bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center text-xs font-bold text-primary-700 dark:text-primary-300">{i + 1}</span>
+                      <span className={`badge text-xs ${ok ? 'badge-success' : 'badge-danger'}`}>{ok ? '✅ Correct' : '❌ Wrong'}</span>
+                      <span className="badge text-xs badge-primary">{section.icon} {section.name}</span>
                     </div>
-                    <p className="font-medium text-gray-900 dark:text-white mb-3">{q.question}</p>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
-                      <div className={`p-2 rounded ${isCorrect ? 'bg-green-100 dark:bg-green-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
-                        <span className="font-medium">Your Answer:</span> {userAnswer}
-                      </div>
-                      <div className="p-2 rounded bg-green-100 dark:bg-green-900/30">
-                        <span className="font-medium">Correct:</span> {q.answer}
-                      </div>
-                      <div className="p-2 rounded bg-gray-100 dark:bg-dark-800">
-                        <span className="font-medium">Source:</span> {q.source === 'notopedia' ? '📄 Notopedia' : '🤖 AI Generated'}
-                      </div>
+                    <p className="font-medium text-gray-900 dark:text-white text-sm mb-2">{q.question}</p>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <span className={`px-2 py-1 rounded ${ok ? 'bg-green-100 text-green-800 dark:bg-green-900/30' : 'bg-red-100 text-red-800 dark:bg-red-900/30'}`}>Your: {ua}</span>
+                      {!ok && <span className="px-2 py-1 rounded bg-green-100 text-green-800 dark:bg-green-900/30">Correct: {q.answer}</span>}
                     </div>
                     {q.explanation && (
-                      <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-sm">
-                        <strong className="text-blue-800 dark:text-blue-400">💡 Explanation:</strong> {q.explanation}
-                      </div>
+                      <p className="mt-2 text-xs text-gray-600 dark:text-gray-400 bg-blue-50 dark:bg-blue-900/20 p-2 rounded">💡 {q.explanation}</p>
                     )}
                   </div>
                 );
