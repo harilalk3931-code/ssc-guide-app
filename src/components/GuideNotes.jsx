@@ -1,18 +1,28 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Navbar from './Navbar';
 import { useStore } from '../store';
 
-// Text-to-speech utility
-function speakText(text) {
+// Text-to-speech utility — preloads voices for instant playback
+let cachedVoices = [];
+function loadVoices() {
   if (!('speechSynthesis' in window)) return;
+  cachedVoices = window.speechSynthesis.getVoices();
+}
+if ('speechSynthesis' in window) {
+  loadVoices();
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+}
+
+function speakText(text) {
+  if (!('speechSynthesis' in window)) { alert('Your browser does not support text-to-speech. Try Chrome or Edge.'); return; }
   window.speechSynthesis.cancel();
+  if (cachedVoices.length === 0) loadVoices();
   const clean = text.replace(/[#*_`>\-]/g, '').replace(/\n+/g, '. ').replace(/\s+/g, ' ').trim();
-  const u = new SpeechSynthesisUtterance(clean);
+  const u = new SpeechSynthesisUtterance(clean.slice(0, 5000));
   u.rate = 0.85;
   u.pitch = 1;
   u.lang = 'en-IN';
-  const voices = window.speechSynthesis.getVoices();
-  const indian = voices.find((v) => v.lang.startsWith('en-IN')) || voices.find((v) => v.lang.startsWith('en'));
+  const indian = cachedVoices.find((v) => v.lang.startsWith('en-IN')) || cachedVoices.find((v) => v.lang.startsWith('en'));
   if (indian) u.voice = indian;
   window.speechSynthesis.speak(u);
 }
