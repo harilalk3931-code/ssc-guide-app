@@ -96,6 +96,7 @@ export default function QuestionBank() {
   const [datasetLoading, setDatasetLoading] = useState(false);
   const [datasetPage, setDatasetPage] = useState(0);
   const [ttsSpeaking, setTtsSpeaking] = useState(null);
+  const [customTopicName, setCustomTopicName] = useState('');
   const MCQS_PER_PAGE = 30;
 
   // Load shared question bank, bookmarks, and saved API keys on mount
@@ -190,7 +191,12 @@ export default function QuestionBank() {
   };
 
   const generateTopics = () => {
-    return selectedTopics.length > 0 ? selectedTopics : [genConfig.category];
+    if (selectedTopics.length > 0) return selectedTopics;
+    if (genConfig.category === '__custom__') {
+      const slug = customTopicName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      return [slug || 'custom'];
+    }
+    return [genConfig.category];
   };
 
   const addApiKey = () => {
@@ -247,13 +253,8 @@ export default function QuestionBank() {
   const testMyAI = async () => {
     const apiKey = getEffectiveApiKey();
     const prov = getEffectiveProvider();
-    if (!apiKey) {
-      setApiKeyStatus('⚠️ Add an API key first');
-      setTimeout(() => setApiKeyStatus(null), 4000);
-      return;
-    }
     setApiKeyStatus('🔄 Testing connection...');
-    const result = await testAIConnection({ apiKey, provider: prov });
+    const result = await testAIConnection({ apiKey: apiKey || undefined, provider: prov });
     if (result.success) {
       setApiKeyStatus(`✅ ${result.message} (model: ${result.model})`);
     } else {
@@ -264,18 +265,17 @@ export default function QuestionBank() {
 
   const generateQuestions = async () => {
     const apiKey = getEffectiveApiKey();
-    if (!apiKey) {
-      setApiKeyStatus('⚠️ Add an AI API key in settings first (⚙️ button above)');
-      setTimeout(() => setApiKeyStatus(null), 5000);
-      return;
-    }
+    // No key needed — server uses its built-in NEMOTRON_API_KEY if none provided
 
     const topics = generateTopics();
-    const topicsInfo = topics.map((id) => GENERATE_TOPICS.find((t) => t.id === id)).filter(Boolean);
+    const topicsInfo = topics.map((id) => {
+      const found = GENERATE_TOPICS.find((t) => t.id === id);
+      return found || { id, label: customTopicName.trim() || id, icon: '✏️' };
+    });
     const batchCount = Math.max(1, Math.round(genConfig.count / topics.length));
     setLoadingAi(true);
     let added = 0;
-    setGenProgress({ done: 0, total: topics.length, label: 'Generating from previous papers + live web sources...' });
+    setGenProgress({ done: 0, total: topics.length, label: 'Connecting to AI provider...' });
     try {
       for (let i = 0; i < topics.length; i++) {
         const topic = topics[i];
@@ -314,18 +314,19 @@ export default function QuestionBank() {
   // Batch generation: create 25 questions for each selected topic
   const generateBatch = async () => {
     const apiKey = getEffectiveApiKey();
-    if (!apiKey) {
-      setApiKeyStatus('⚠️ Add an AI API key in settings first (⚙️ button above)');
-      setTimeout(() => setApiKeyStatus(null), 5000);
-      return;
-    }
+    // No key needed — server uses its built-in NEMOTRON_API_KEY if none provided
 
-    const topics = generateTopics().map((id) => GENERATE_TOPICS.find((t) => t.id === id)).filter(Boolean);
+    const topicIds = generateTopics();
+    const topics = topicIds.map((id) => {
+      const found = GENERATE_TOPICS.find((t) => t.id === id);
+      if (found) return found;
+      return { id, label: customTopicName.trim() || id, icon: '✏️' };
+    });
     const batchCount = 25;
     const totalBatches = topics.length;
 
     setLoadingAi(true);
-    setGenProgress({ done: 0, total: totalBatches, label: 'Starting batch generation...' });
+    setGenProgress({ done: 0, total: totalBatches, label: 'Connecting to AI provider...' });
 
     let added = 0;
     for (let i = 0; i < topics.length; i++) {
@@ -540,12 +541,32 @@ export default function QuestionBank() {
                 <select
                   value={genConfig.category}
                   onChange={(e) => setGenConfig({...genConfig, category: e.target.value})}
-                  className="input-field w-auto min-w-[160px] py-2 text-sm"
+                  className="input-field w-auto min-w-[180px] py-2 text-sm"
                 >
-                  {GENERATE_TOPICS.map((t) => (
-                    <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
-                  ))}
+                  <optgroup label="Available Topics">
+                    {GENERATE_TOPICS.map((t) => {
+                      const count = allQuestions.filter((q) => (q.topic || q.category) === t.id).length;
+                      return (
+                        <option key={t.id} value={t.id}>
+                          {t.icon} {t.label} ({count} questions)
+                        </option>
+                      );
+                    })}
+                  </optgroup>
+                  <optgroup label="Custom Topic">
+                    <option value="__custom__">✏️ Custom Topic...</option>
+                  </optgroup>
                 </select>
+                {genConfig.category === '__custom__' && (
+                  <input
+                    type="text"
+                    placeholder="Enter topic name..."
+                    value={customTopicName}
+                    onChange={(e) => setCustomTopicName(e.target.value)}
+                    className="input-field w-auto min-w-[180px] py-2 text-sm"
+                    autoFocus
+                  />
+                )}
                 <select
                   value={genConfig.difficulty}
                   onChange={(e) => setGenConfig({...genConfig, difficulty: e.target.value})}
@@ -580,10 +601,11 @@ export default function QuestionBank() {
                 <div className="flex flex-wrap gap-2">
                   {GENERATE_TOPICS.map((t) => {
                     const active = selectedTopics.includes(t.id);
+                    const count = allQuestions.filter((q) => (q.topic || q.category) === t.id).length;
                     return (
                       <button key={t.id} onClick={() => toggleTopic(t.id)}
                         className={`px-3 py-1.5 rounded-full text-xs border transition-all ${active ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'}`}>
-                        {t.icon} {t.label}
+                        {t.icon} {t.label} <span className="opacity-70">({count})</span>
                       </button>
                     );
                   })}
@@ -633,19 +655,29 @@ export default function QuestionBank() {
                     </div>
                   </div>
                   {apiKeyStatus && <p className="text-xs text-primary-600 dark:text-primary-400 mt-2 font-medium">{apiKeyStatus}</p>}
-                  <button onClick={testMyAI} className="mt-2 text-xs text-gray-500 dark:text-gray-400 underline hover:text-primary-500">🔌 Test Connection</button>
+                  <div className="flex items-center gap-3 mt-2">
+                    <button onClick={testMyAI} className="text-xs text-gray-500 dark:text-gray-400 underline hover:text-primary-500">🔌 Test Connection</button>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">• No key? Uses server's built-in Nemotron key</span>
+                  </div>
                 </div>
               )}
 
               {genProgress && (
-                <div className="mt-3 p-4 rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/10 animate-slide-down">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-primary-700 dark:text-primary-300">{genProgress.label}</span>
-                    <span className="text-sm text-primary-600 dark:text-primary-400">{genProgress.done}/{genProgress.total}</span>
+                <div className="mt-4 p-5 rounded-xl border-2 border-primary-300 dark:border-primary-700 bg-gradient-to-r from-primary-50 to-purple-50 dark:from-primary-900/20 dark:to-purple-900/20 animate-slide-down">
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-primary-500 flex items-center justify-center animate-bounce">
+                      <span className="text-white text-xl">🤖</span>
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-primary-800 dark:text-primary-200">{genProgress.label}</p>
+                      <p className="text-xs text-primary-600 dark:text-primary-400">{genProgress.done}/{genProgress.total} topics complete</p>
+                    </div>
+                    <span className="text-lg font-bold text-primary-700 dark:text-primary-300">{Math.round((genProgress.done / genProgress.total) * 100)}%</span>
                   </div>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }} />
+                  <div className="progress-bar h-3">
+                    <div className="progress-fill h-3" style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }} />
                   </div>
+                  <p className="text-xs text-primary-600 dark:text-primary-400 mt-2">This may take 10-30 seconds per topic. Please wait...</p>
                 </div>
               )}
             </div>
