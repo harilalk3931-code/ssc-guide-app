@@ -180,6 +180,20 @@ export const useStore = create(
           testHistory: [test, ...state.testHistory].slice(0, 50),
         })),
 
+      // Wrong Book (incorrectly answered questions)
+      wrongBook: [],
+      addToWrongBook: (question) =>
+        set((state) => {
+          const exists = state.wrongBook.some((q) => q.id === question.id);
+          if (exists) return state;
+          return { wrongBook: [...state.wrongBook, { ...question, addedAt: Date.now() }] };
+        }),
+      removeFromWrongBook: (id) =>
+        set((state) => ({
+          wrongBook: state.wrongBook.filter((q) => q.id !== id),
+        })),
+      clearWrongBook: () => set({ wrongBook: [] }),
+
       // Notopedia Data
       notopediaData: null,
       notopediaLoading: false,
@@ -212,6 +226,7 @@ export const useStore = create(
         userStats: state.userStats,
         questions: state.questions,
         customNotes: state.customNotes,
+        wrongBook: state.wrongBook,
       }),
     }
   )
