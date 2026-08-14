@@ -2,6 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+.markdown-body h3 {
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: inherit;
+}
+.markdown-body p { margin-bottom: 0.75rem; }
+.markdown-body ul, .markdown-body ol {
+  margin-top: 0.25rem;
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+  list-style: disc;
+}
+.markdown-body ol { list-style: decimal; }
+.markdown-body li { margin-bottom: 0.25rem; }
+.markdown-body strong { font-weight: 600; color: inherit; }
+.markdown-body blockquote {
+  border-left: 3px solid rgba(79, 70, 229, 0.4);
+  padding-left: 1rem;
+  margin: 0.5rem 0 0.75rem;
+  color: inherit;
+  opacity: 0.85;
+}
+
 @layer base {
   :root {
     --color-primary: 79 70 229;
