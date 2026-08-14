@@ -43,6 +43,19 @@ export async function generateQuestionsWithAI({ category, difficulty, count, api
   }
 }
 
+export async function testAIConnection({ apiKey, provider }) {
+  try {
+    const response = await fetch('/api/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, provider }),
+    });
+    return await response.json();
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 export async function generateNotesWithAI({ subject, topic, apiKey, provider }) {
   try {
     const response = await fetch('/api/ai/notes', {
@@ -72,6 +85,18 @@ export async function fetchSharedBank() {
   } catch (error) {
     console.error('Error loading shared question bank:', error);
     throw error;
+  }
+}
+
+export async function fetchDatasetMCQs(topic = 'all') {
+  try {
+    const url = topic && topic !== 'all' ? `/api/notes-mcqs?topic=${topic}` : '/api/notes-mcqs';
+    const response = await fetch(url);
+    const data = await response.json();
+    return data.mcqs || [];
+  } catch (error) {
+    console.error('Error loading dataset MCQs:', error);
+    return [];
   }
 }
 
