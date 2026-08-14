@@ -1,6 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import Navbar from './Navbar';
 import { useStore } from '../store';
+
+marked.setOptions({ gfm: true, breaks: true });
+
+const renderMarkdown = (md) => DOMPurify.sanitize(marked.parse(md || ''));
 
 const PROVIDER_NAMES = {
   nemotron: 'NVIDIA Nemotron',
@@ -579,9 +585,31 @@ export default function GuideNotes() {
   const [aiKeySaved, setAiKeySaved] = useState(false);
   const [savedKeys, setSavedKeys] = useState([]);
   const [activeKeyId, setActiveKeyId] = useState(null);
+  const [folderNotes, setFolderNotes] = useState(null); // subjects loaded from content/guide-notes
+  const [notesSource, setNotesSource] = useState('builtin'); // 'builtin' | 'folder' | 'mixed'
 
-  const subjects = Object.keys(GUIDE_NOTES);
-  const subjectData = GUIDE_NOTES[selectedSubject];
+  // Merge built-in notes with folder notes (folder subjects that aren't built-in are added)
+  const allSubjects = useMemo(() => {
+    const map = {};
+    Object.keys(GUIDE_NOTES).forEach((k) => {
+      map[k] = { ...GUIDE_NOTES[k], builtin: true };
+    });
+    if (Array.isArray(folderNotes)) {
+      folderNotes.forEach((s) => {
+        if (map[s.name]) {
+          // Merge sections from folder into existing built-in subject
+          map[s.name].sections = [...map[s.name].sections, ...s.sections];
+          map[s.name].totalMCQs = (map[s.name].totalMCQs || 0) + (s.totalMCQs || 0);
+        } else {
+          map[s.name] = { icon: s.icon, color: s.color, sections: s.sections, builtin: false, totalMCQs: s.totalMCQs || 0 };
+        }
+      });
+    }
+    return map;
+  }, [folderNotes]);
+
+  const subjects = Object.keys(allSubjects);
+  const subjectData = allSubjects[selectedSubject] || { icon: '📘', color: 'from-blue-500 to-cyan-500', sections: [] };
 
   // Load saved AI notes topic + saved API keys from shared storage
   const aiNotes = Object.keys(customNotes).filter((k) => k.startsWith('ai-note-'));
@@ -595,6 +623,23 @@ export default function GuideNotes() {
     } catch (e) {
       setSavedKeys([]);
     }
+  }, []);
+
+  // Load rich notes from content/guide-notes (markdown files served by the server)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/guide-notes');
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.subjects) && data.subjects.length > 0) {
+          setFolderNotes(data.subjects);
+          setNotesSource(data.subjects.some((s) => Object.prototype.hasOwnProperty.call(GUIDE_NOTES, s.name)) ? 'mixed' : 'folder');
+        }
+      } catch (e) {
+        // fall back to built-in notes silently
+        setFolderNotes(null);
+      }
+    })();
   }, []);
 
   const getActiveKey = () => {
@@ -694,12 +739,12 @@ export default function GuideNotes() {
                 onClick={() => setSelectedSubject(subject)}
                 className={`px-5 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
                   selectedSubject === subject
-                    ? `bg-gradient-to-r ${GUIDE_NOTES[subject].color} text-white shadow-lg`
+                    ? `bg-gradient-to-r ${allSubjects[subject].color} text-white shadow-lg`
                     : 'bg-gray-100 dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-100 dark:hover:bg-primary-900/30'
                 }`}
               >
                 <span className="flex items-center gap-1">
-                  <span>{GUIDE_NOTES[subject].icon}</span> {subject}
+                  <span>{allSubjects[subject].icon}</span> {subject}
                 </span>
               </button>
             ))}
@@ -762,7 +807,7 @@ export default function GuideNotes() {
                     className="input-field"
                   >
                     {subjects.map((s) => (
-                      <option key={s} value={s}>{GUIDE_NOTES[s].icon} {s}</option>
+                      <option key={s} value={s}>{allSubjects[s].icon} {s}</option>
                     ))}
                   </select>
                 </div>
@@ -864,7 +909,9 @@ export default function GuideNotes() {
 
         {/* Notes Content */}
         <h2 className="section-title mb-4 flex items-center gap-2 animate-fade-in">
-          <span>📖</span> Built-in Guide Notes
+          <span>📖</span> Study Notes
+          {notesSource === 'folder' && <span className="badge badge-success text-xs">Rich content • {subjects.length} subjects</span>}
+          {notesSource === 'mixed' && <span className="badge badge-success text-xs">Built-in + Rich content</span>}
         </h2>
         <div className="space-y-4 animate-fade-in stagger-4">
           {filteredSections.map((section) => {
@@ -894,9 +941,10 @@ export default function GuideNotes() {
 
                 {isExpanded && (
                   <div className="px-5 pb-5 animate-slide-down border-t border-gray-100 dark:border-gray-700 prose prose-sm dark:prose-invert max-w-none">
-                    <div className="whitespace-pre-wrap text-gray-700 dark:text-gray-300 leading-relaxed">
-                      {section.content}
-                    </div>
+                    <div
+                      className="prose prose-sm dark:prose-invert max-w-none markdown-body text-gray-700 dark:text-gray-300 leading-relaxed"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(section.content) }}
+                    />
                   </div>
                 )}
               </div>
