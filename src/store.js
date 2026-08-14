@@ -215,7 +215,7 @@ export const useStore = create(
         })),
     }),
     {
-      name: 'ssc-guide-storage',
+      name: 'prepmaster-storage',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         isDarkMode: state.isDarkMode,
