@@ -5,10 +5,10 @@ import { jsPDF } from 'jspdf';
 import Navbar from './Navbar';
 
 const SECTIONS = [
-  { id: 'general-awareness', name: 'General Awareness', icon: '🌍', color: 'from-blue-500 to-cyan-500', topics: ['general-awareness', 'current-affairs', 'history', 'geography', 'polity', 'economy', 'science', 'art-culture', 'environment', 'computer', 'miscellaneous-gk'] },
-  { id: 'reasoning', name: 'Reasoning', icon: '🧩', color: 'from-purple-500 to-pink-500', topics: ['reasoning'] },
-  { id: 'quant', name: 'Quantitative Aptitude', icon: '🔢', color: 'from-green-500 to-emerald-500', topics: ['quant'] },
-  { id: 'english', name: 'English Comprehension', icon: '📝', color: 'from-orange-500 to-red-500', topics: ['english'] },
+  { id: 'general-awareness', name: 'General Awareness', icon: '🌍', color: 'from-blue-500 to-cyan-500', topicPrefixes: ['general-awareness', 'current-affairs', 'history', 'geography', 'polity', 'economy', 'science', 'art-culture', 'environment', 'computer', 'miscellaneous-gk'] },
+  { id: 'reasoning', name: 'Reasoning', icon: '🧩', color: 'from-purple-500 to-pink-500', topicPrefixes: ['reasoning'] },
+  { id: 'quant', name: 'Quantitative Aptitude', icon: '🔢', color: 'from-green-500 to-emerald-500', topicPrefixes: ['quant'] },
+  { id: 'english', name: 'English Comprehension', icon: '📝', color: 'from-orange-500 to-red-500', topicPrefixes: ['english'] },
 ];
 
 const TEST_MODES = [
@@ -102,7 +102,11 @@ export default function TestCreator() {
   const getQuestionsForSection = (sectionId) => {
     const section = SECTIONS.find((s) => s.id === sectionId);
     if (!section) return [];
-    return allQuestions.filter((q) => section.topics.includes(q.topic));
+    return allQuestions.filter((q) => section.topicPrefixes.some((p) => q.topic === p || q.topic.startsWith(p + '-')));
+  };
+
+  const findSectionForTopic = (topic) => {
+    return SECTIONS.find((s) => s.topicPrefixes.some((p) => topic === p || topic.startsWith(p + '-'))) || SECTIONS[0];
   };
 
   const startTest = () => {
@@ -179,7 +183,7 @@ export default function TestCreator() {
 
     testQuestions.forEach((q, i) => {
       const userAns = answers[i];
-      const section = SECTIONS.find((s) => s.topics.includes(q.topic)) || SECTIONS[0];
+      const section = findSectionForTopic(q.topic);
       sectionScores[section.id].total++;
 
       if (!userAns) {
@@ -386,7 +390,7 @@ export default function TestCreator() {
     const answeredCount = Object.keys(answers).length;
     const markedCount = marked.size;
     const progress = testQuestions.length > 0 ? (answeredCount / testQuestions.length) * 100 : 0;
-    const sectionInfo = SECTIONS.find((s) => s.topics.includes(q?.topic)) || SECTIONS[0];
+    const sectionInfo = q ? findSectionForTopic(q.topic) : SECTIONS[0];
 
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-dark-900">
@@ -600,7 +604,7 @@ export default function TestCreator() {
               {testQuestions.map((q, i) => {
                 const ua = answers[i] || 'Not answered';
                 const ok = ua === q.answer;
-                const section = SECTIONS.find((s) => s.topics.includes(q.topic)) || SECTIONS[0];
+                const section = findSectionForTopic(q.topic);
                 return (
                   <div key={i} className={`p-4 rounded-xl border transition-all ${ok ? 'border-green-200 bg-green-50/50 dark:bg-green-900/10' : 'border-red-200 bg-red-50/50 dark:bg-red-900/10'}`}>
                     <div className="flex items-center gap-2 mb-2">
