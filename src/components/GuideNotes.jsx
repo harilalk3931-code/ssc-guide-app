@@ -679,17 +679,33 @@ export default function GuideNotes() {
   const [folderNotes, setFolderNotes] = useState(null); // subjects loaded from content/guide-notes
   const [notesSource, setNotesSource] = useState('builtin'); // 'builtin' | 'folder' | 'mixed'
   const [ttsSection, setTtsSection] = useState(null);
+  const [selectedSubtopic, setSelectedSubtopic] = useState(null);
+
+  // Strip MCQs from content — guide notes should only show study material
+  const stripMCQs = (content) => {
+    if (!content) return '';
+    return content.replace(/\n### Quick Practice[\s\S]*$/i, '').replace(/\n\d+\.\s+\*\*[^*]+\*\*\s*\n\s*-\s+[A-D]\)/g, '').trim();
+  };
+
+  // Map all subjects into 4 main categories
+  const MAIN_CATEGORIES = {
+    'General Awareness': { icon: '🌍', color: 'from-blue-500 to-cyan-500', prefixes: ['history', 'art-culture', 'polity', 'geography', 'economics', 'science', 'environment', 'computer', 'miscellaneous-gk', 'current-affairs'] },
+    'English': { icon: '📝', color: 'from-orange-500 to-red-500', prefixes: ['english'] },
+    'Reasoning': { icon: '🧩', color: 'from-purple-500 to-pink-500', prefixes: ['reasoning'] },
+    'Quantitative Aptitude': { icon: '🔢', color: 'from-green-500 to-emerald-500', prefixes: ['quant'] },
+  };
 
   // Merge built-in notes with folder notes (folder subjects that aren't built-in are added)
   const allSubjects = useMemo(() => {
     const map = {};
+    // Add built-in GUIDE_NOTES
     Object.keys(GUIDE_NOTES).forEach((k) => {
       map[k] = { ...GUIDE_NOTES[k], builtin: true };
     });
+    // Add folder notes
     if (Array.isArray(folderNotes)) {
       folderNotes.forEach((s) => {
         if (map[s.name]) {
-          // Merge sections from folder into existing built-in subject
           map[s.name].sections = [...map[s.name].sections, ...s.sections];
           map[s.name].totalMCQs = (map[s.name].totalMCQs || 0) + (s.totalMCQs || 0);
         } else {
@@ -700,8 +716,37 @@ export default function GuideNotes() {
     return map;
   }, [folderNotes]);
 
-  const subjects = Object.keys(allSubjects);
-  const subjectData = allSubjects[selectedSubject] || { icon: '📘', color: 'from-blue-500 to-cyan-500', sections: [] };
+  // Build 4 main categories with subtopics
+  const mainCategories = useMemo(() => {
+    const cats = {};
+    Object.keys(MAIN_CATEGORIES).forEach((catName) => {
+      const catInfo = MAIN_CATEGORIES[catName];
+      const subtopics = [];
+      Object.keys(allSubjects).forEach((subjectName) => {
+        const slug = subjectName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
+        const isMatch = catInfo.prefixes.some((p) => slug === p || slug.startsWith(p + '-'));
+        if (isMatch) {
+          subtopics.push({ name: subjectName, ...allSubjects[subjectName] });
+        }
+      });
+      // For GA, also add built-in GUIDE_NOTES subjects
+      if (catName === 'General Awareness') {
+        Object.keys(GUIDE_NOTES).forEach((k) => {
+          if (!subtopics.find((s) => s.name === k)) {
+            subtopics.push({ name: k, ...GUIDE_NOTES[k], builtin: true });
+          }
+        });
+      }
+      cats[catName] = { ...catInfo, subtopics };
+    });
+    return cats;
+  }, [allSubjects]);
+
+  // Current selected category's subtopics
+  const currentCat = mainCategories[selectedSubject] || { subtopics: [] };
+  const activeSubtopic = selectedSubtopic || (currentCat.subtopics[0]?.name || null);
+  const subjectData = allSubjects[activeSubtopic] || { icon: '📘', color: 'from-blue-500 to-cyan-500', sections: [] };
+  const subjects = Object.keys(mainCategories);
 
   // Load saved AI notes topic + saved API keys from shared storage
   const aiNotes = Object.keys(customNotes).filter((k) => k.startsWith('ai-note-'));
@@ -822,26 +867,52 @@ export default function GuideNotes() {
           </div>
         </div>
 
-        {/* Subject Selector */}
-        <div className="glass-card p-3 mb-6 animate-fade-in stagger-1">
+        {/* Main Category Selector - 4 Tabs */}
+        <div className="glass-card p-3 mb-4 animate-fade-in stagger-1">
           <div className="flex flex-wrap gap-2">
-            {subjects.map((subject) => (
-              <button
-                key={subject}
-                onClick={() => setSelectedSubject(subject)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  selectedSubject === subject
-                    ? `bg-gradient-to-r ${allSubjects[subject].color} text-white shadow-lg scale-105`
-                    : 'bg-gray-100 dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-100 dark:hover:bg-primary-900/30'
-                }`}
-              >
-                <span className="flex items-center gap-1">
-                  <span>{allSubjects[subject].icon}</span> {subject}
-                </span>
-              </button>
-            ))}
+            {subjects.map((catName) => {
+              const cat = mainCategories[catName];
+              return (
+                <button
+                  key={catName}
+                  onClick={() => { setSelectedSubject(catName); setSelectedSubtopic(null); }}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                    selectedSubject === catName
+                      ? `bg-gradient-to-r ${cat.color} text-white shadow-lg scale-105`
+                      : 'bg-gray-100 dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-100 dark:hover:bg-primary-900/30'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span>{cat.icon}</span> {catName}
+                    <span className="text-xs opacity-70">({cat.subtopics.length})</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
+
+        {/* Subtopic Selector */}
+        {currentCat.subtopics.length > 1 && (
+          <div className="glass-card p-3 mb-6 animate-fade-in stagger-2">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Select subtopic:</p>
+            <div className="flex flex-wrap gap-2">
+              {currentCat.subtopics.map((st) => (
+                <button
+                  key={st.name}
+                  onClick={() => setSelectedSubtopic(st.name)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    activeSubtopic === st.name
+                      ? `bg-gradient-to-r ${st.color} text-white shadow-md`
+                      : 'bg-gray-50 dark:bg-dark-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-dark-600'
+                  }`}
+                >
+                  {st.icon} {st.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Search */}
         <div className="glass-card p-4 mb-6 animate-fade-in stagger-2">
@@ -1002,7 +1073,7 @@ export default function GuideNotes() {
         {/* Notes Content */}
         <h2 className="section-title mb-4 flex items-center gap-2 animate-fade-in">
           <span>📖</span> Study Notes
-          {notesSource === 'folder' && <span className="badge badge-success text-xs">Rich content • {subjects.length} subjects</span>}
+          {notesSource === 'folder' && <span className="badge badge-success text-xs">Rich content • {Object.keys(allSubjects).length} subjects</span>}
           {notesSource === 'mixed' && <span className="badge badge-success text-xs">Built-in + Rich content</span>}
         </h2>
         <div className="space-y-4 animate-fade-in stagger-4">
@@ -1038,7 +1109,7 @@ export default function GuideNotes() {
                         onClick={(e) => {
                           e.stopPropagation();
                           if (ttsSection === section.title) { stopSpeech(); setTtsSection(null); }
-                          else { setTtsSection(section.title); speakText(section.content); }
+                          else { setTtsSection(section.title); speakText(stripMCQs(section.content)); }
                         }}
                         className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${ttsSection === section.title ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400 hover:bg-primary-200'}`}
                       >
@@ -1047,7 +1118,7 @@ export default function GuideNotes() {
                     </div>
                     <div
                       className="prose prose-sm dark:prose-invert max-w-none markdown-body text-gray-700 dark:text-gray-300 leading-relaxed"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(section.content) }}
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(stripMCQs(section.content)) }}
                     />
                   </div>
                 )}
