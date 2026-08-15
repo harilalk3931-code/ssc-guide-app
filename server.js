@@ -77,6 +77,15 @@ function parseGuideNotesFile(filename, raw) {
   }
   if (current) sections.push(current);
 
+  // Strip MCQ practice blocks from note content — guide notes show study material only
+  const stripPracticeBlocks = (content) => {
+    if (!content) return '';
+    return content
+      .replace(/\n?###\s+Quick Practice[\s\S]*$/i, '')
+      .replace(/\n?\d+\.\s+\*\*[^\n]*\*\*\s*\n(?:\s*-\s+[A-D]\)\s+.+\n?)+/g, '')
+      .trim();
+  };
+
   const base = path.basename(filename, '.md').toLowerCase();
   const meta = SUBJECT_META[base] || { name: base, icon: '📘', color: 'from-blue-500 to-cyan-500' };
   return {
@@ -84,7 +93,9 @@ function parseGuideNotesFile(filename, raw) {
     name: meta.name,
     icon: meta.icon,
     color: meta.color,
-    sections: sections.filter((s) => s.title && s.content.trim()),
+    sections: sections
+      .filter((s) => s.title && s.content.trim())
+      .map((s) => ({ ...s, content: stripPracticeBlocks(s.content) })),
     totalMCQs: sections.reduce((acc, s) => acc + (s.content.match(/^\s*- \*\*Answer:/gm) || []).length, 0),
   };
 }
@@ -677,19 +688,40 @@ Return ONLY a valid JSON array in this exact format:
 
   // Parse JSON robustly: the model may wrap the array in prose like
   // "Here are questions generated from wikipedia..." — extract the array.
-  const questions = extractJsonArray(content);
-  if (!questions) {
+  const raw = extractJsonArray(content);
+  if (!raw || !Array.isArray(raw) || raw.length === 0) {
     throw new Error('No valid JSON found in AI response. The model returned prose instead of JSON.');
   }
 
-  return questions.map((q, i) => ({
-    ...q,
-    id: `${provider}-${Date.now()}-${i}`,
-    source: provider,
-    topic: category,
-    category,
-    difficulty,
-  }));
+  // Validate each item — the model sometimes returns strings or malformed objects
+  const questions = raw
+    .filter((q) => q && typeof q === 'object')
+    .filter((q) => {
+      const hasText = typeof q.question === 'string' && q.question.trim().length > 5;
+      const hasOptions = Array.isArray(q.options) && q.options.length === 4 && q.options.every((o) => typeof o === 'string' && o.trim().length > 0);
+      const hasAnswer = typeof q.answer === 'string' && q.answer.trim().length > 0;
+      const hasExpl = typeof q.explanation === 'string' && q.explanation.trim().length > 10;
+      return hasText && hasOptions && hasAnswer && hasExpl;
+    })
+    .map((q, i) => ({
+      ...q,
+      question: q.question.trim(),
+      options: q.options.map((o) => o.trim()),
+      answer: q.answer.trim(),
+      explanation: q.explanation.trim(),
+      id: `${provider}-${Date.now()}-${i}`,
+      source: provider,
+      topic: category,
+      category,
+      difficulty,
+    }))
+    .slice(0, count);
+
+  if (questions.length === 0) {
+    throw new Error('AI response did not contain any valid questions. The model returned malformed JSON. Please try again.');
+  }
+
+  return questions;
 }
 
 // Extract a JSON array from a possibly prose-wrapped AI response
