@@ -65,7 +65,7 @@ const GENERATE_TOPICS = [
 ];
 
 export default function QuestionBank() {
-  const { questions, setQuestions, setQuestionsError, userStats, updateUserStats, wrongBook, addToWrongBook, removeFromWrongBook, clearWrongBook } = useStore();
+  const { questions, setQuestions, setQuestionsError, userStats, updateUserStats, wrongBook, addToWrongBook, removeFromWrongBook, clearWrongBook, customNotes, removeCustomNote } = useStore();
   const [activeTab, setActiveTab] = useState('dataset'); // 'dataset' | 'ai' | 'wrongbook'
   const [selectedTopic, setSelectedTopic] = useState('all');
   const [selectedDifficulty, setSelectedDifficulty] = useState('all');
@@ -98,13 +98,21 @@ export default function QuestionBank() {
   const [ttsSpeaking, setTtsSpeaking] = useState(null);
   const [customTopicName, setCustomTopicName] = useState('');
   const MCQS_PER_PAGE = 30;
+  const [bankLoaded, setBankLoaded] = useState(false);
 
-  // Load shared question bank, bookmarks, and saved API keys on mount
+  // Load bookmarks and saved keys on mount; shared bank loads lazily when AI tab is opened
   useEffect(() => {
-    loadSharedBank();
     loadBookmarks();
     loadSavedKeys();
   }, []);
+
+  // Lazy-load shared bank only when user opens AI tab (reduces initial page lag)
+  useEffect(() => {
+    if (activeTab === 'ai' && !bankLoaded) {
+      setBankLoaded(true);
+      loadSharedBank();
+    }
+  }, [activeTab]);
 
   // Load dataset MCQs from markdown files
   useEffect(() => {
@@ -357,7 +365,10 @@ export default function QuestionBank() {
     alert(`✅ Batch complete! Added ${added} questions to the shared Question Bank — visible to everyone visiting this site.`);
   };
 
-  const filteredQuestions = (questions || [])
+  // allQuestions = all AI-generated questions (safe alias used for topic counts in JSX)
+  const allQuestions = questions || [];
+
+  const filteredQuestions = allQuestions
     .filter((q) => {
       const questionText = (q && q.question ? q.question : '').toLowerCase();
       const qTopic = (q && q.topic) || (q && q.category) || 'general';
@@ -368,7 +379,6 @@ export default function QuestionBank() {
       return true;
     })
     .sort((a, b) => {
-      // Sort by topic, then difficulty (safe against missing fields)
       const topicA = (a && a.topic) || (a && a.category) || 'general';
       const topicB = (b && b.topic) || (b && b.category) || 'general';
       if (topicA !== topicB) return topicA.localeCompare(topicB);
@@ -377,8 +387,8 @@ export default function QuestionBank() {
     });
 
   const getTopicInfo = (topicId) => {
-    const topic = TOPICS.find(t => t.id === topicId);
-    return topic ? `${topic.icon} ${topic.name}` : topicId;
+    const topic = TOPICS.find((t) => t.id === topicId);
+    return topic ? `${topic?.icon || '📘'} ${topic?.name || topicId}` : topicId;
   };
 
   const getDifficultyBadge = (difficulty) => {
@@ -436,6 +446,12 @@ export default function QuestionBank() {
     }
   };
 
+  // Derive AI-generated notes list from store
+  const aiNotesList = Object.entries(customNotes || {})
+    .filter(([k]) => k.startsWith('ai-note-'))
+    .map(([key, note]) => ({ key, ...note }))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
   return (
     <div className="min-h-screen pb-20 safe-area-inset-bottom">
       <Navbar />
@@ -450,16 +466,17 @@ export default function QuestionBank() {
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex gap-2 mb-6 animate-fade-in stagger-1">
+        <div className="flex flex-wrap gap-2 mb-6 animate-fade-in stagger-1">
           {[
             { id: 'dataset', label: '📚 Study MCQs', desc: `${datasetTotal} curated questions` },
-            { id: 'ai', label: '🤖 AI Generate', desc: 'Generate new questions' },
+            { id: 'ai', label: '🤖 AI Questions', desc: `${questions?.length || 0} generated` },
+            { id: 'aicontent', label: '📝 AI Notes', desc: `${aiNotesList.length} saved notes` },
             { id: 'wrongbook', label: `❌ Wrong Book (${wrongBook.length})`, desc: 'Review mistakes' },
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 p-3 rounded-xl text-left transition-all ${
+              className={`flex-1 min-w-[120px] p-3 rounded-xl text-left transition-all ${
                 activeTab === tab.id
                   ? 'bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-lg'
                   : 'bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:bg-primary-50 dark:hover:bg-primary-900/20 border border-gray-200 dark:border-gray-700'
@@ -545,7 +562,7 @@ export default function QuestionBank() {
                 >
                   <optgroup label="Available Topics">
                     {GENERATE_TOPICS.map((t) => {
-                      const count = allQuestions.filter((q) => (q.topic || q.category) === t.id).length;
+                      const count = allQuestions.filter((q) => q && (q.topic || q.category) === t.id).length;
                       return (
                         <option key={t.id} value={t.id}>
                           {t.icon} {t.label} ({count} questions)
@@ -601,7 +618,7 @@ export default function QuestionBank() {
                 <div className="flex flex-wrap gap-2">
                   {GENERATE_TOPICS.map((t) => {
                     const active = selectedTopics.includes(t.id);
-                    const count = allQuestions.filter((q) => (q.topic || q.category) === t.id).length;
+                    const count = allQuestions.filter((q) => q && (q.topic || q.category) === t.id).length;
                     return (
                       <button key={t.id} onClick={() => toggleTopic(t.id)}
                         className={`px-3 py-1.5 rounded-full text-xs border transition-all ${active ? 'border-primary-500 bg-primary-500 text-white' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-dark-800 text-gray-600 dark:text-gray-300 hover:border-primary-400'}`}>
@@ -757,10 +774,12 @@ export default function QuestionBank() {
               <div className="glass-card p-12 text-center animate-fade-in">
                 <div className="text-6xl mb-4">🤖</div>
                 <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No AI questions yet</h3>
-                <p className="text-gray-600 dark:text-gray-400 mb-6">Add an API key above, then generate fresh questions from live web sources</p>
+                <p className="text-gray-600 dark:text-gray-400 mb-2">Click <strong>Generate &amp; Save</strong> to generate fresh questions — no API key required (uses built-in server key).</p>
+                <p className="text-gray-500 dark:text-gray-500 text-sm mb-6">Want faster generation or a specific provider? Click <strong>⚙️ API Keys</strong> above to add your own key.</p>
                 <div className="flex flex-wrap justify-center gap-3">
-                  <button onClick={() => setShowApiSettings(true)} className="btn-primary">⚙️ Add API Key</button>
+                  <button onClick={generateQuestions} className="btn-primary">🎯 Generate Now</button>
                   <button onClick={generateBatch} className="btn-primary bg-gradient-to-r from-purple-600 to-pink-600">🚀 Generate Full Bank</button>
+                  <button onClick={() => setShowApiSettings(true)} className="btn-secondary">⚙️ Add Own API Key</button>
                 </div>
               </div>
             ) : (
@@ -776,6 +795,30 @@ export default function QuestionBank() {
                     onToggleBookmark={() => toggleBookmark(question.id)}
                     viewMode={viewMode}
                   />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'aicontent' && (
+          <>
+            {aiNotesList.length === 0 ? (
+              <div className="glass-card p-12 text-center animate-fade-in">
+                <div className="text-6xl mb-4">📝</div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">No AI notes yet</h3>
+                <p className="text-gray-600 dark:text-gray-400 mb-6">
+                  Go to <strong>Guide Notes</strong> and use the <strong>✨ Generate Notes</strong> button to create AI-powered study notes. They'll appear here automatically.
+                </p>
+                <a href="/guide-notes" className="btn-primary inline-block">📖 Go to Guide Notes</a>
+              </div>
+            ) : (
+              <div className="space-y-4 animate-fade-in">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{aiNotesList.length} AI-generated note{aiNotesList.length !== 1 ? 's' : ''} saved</p>
+                </div>
+                {aiNotesList.map((note) => (
+                  <AiNoteCard key={note.key} note={note} onDelete={() => removeCustomNote(note.key)} />
                 ))}
               </div>
             )}
@@ -845,7 +888,7 @@ function QuestionCard({ question, index, showAnswer, onToggleAnswer, isBookmarke
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm font-medium text-gray-500 dark:text-gray-400">#{index + 1}</span>
             <span className={`badge px-2 py-0.5 text-xs ${diffColors[question.difficulty] || 'badge-primary'}`}>
-              {question.difficulty?.charAt(0).toUpperCase() + question.difficulty?.slice(1) || 'Medium'}
+              {typeof question.difficulty === 'string' && question.difficulty ? (question.difficulty.charAt(0).toUpperCase() + question.difficulty.slice(1)) : 'Medium'}
             </span>
             <span className="badge badge-primary text-xs">{question.topic || 'General'}</span>
             <span className="badge badge-primary text-xs">{sourceIcons[question.source] || '📝'} {question.source}</span>
@@ -886,8 +929,8 @@ function QuestionCard({ question, index, showAnswer, onToggleAnswer, isBookmarke
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-gray-500 dark:text-gray-400">#{index + 1}</span>
-          <span className={`badge px-2 py-0.5 text-xs ${diffColors[question.difficulty] || 'badge-primary'}`}>
-            {question.difficulty?.charAt(0).toUpperCase() + question.difficulty?.slice(1) || 'Medium'}
+          <span className={`badge px-2 py-0.5 text-xs ${diffColors[String(question?.difficulty || 'medium').toLowerCase()] || 'badge-primary'}`}>
+            {typeof question?.difficulty === 'string' && question.difficulty ? (question.difficulty.charAt(0).toUpperCase() + question.difficulty.slice(1)) : 'Medium'}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -1021,6 +1064,66 @@ function DatasetMCQCard({ question, index, selectedAnswer, onSelectAnswer, showE
         <div className="mt-2 p-3 bg-gray-50 dark:bg-dark-800/50 rounded-xl text-sm text-gray-700 dark:text-gray-300">
           {question.explanation}
         </div>
+      )}
+    </div>
+  );
+}
+
+// AiNoteCard — displays a single AI-generated note saved from Guide Notes
+function AiNoteCard({ note, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const formatDate = (iso) => {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return iso; }
+  };
+
+  // Light markdown renderer for headers, bold, bullets, blockquotes, hr
+  const renderMarkdown = (text) => {
+    if (!text) return '';
+    return text
+      .replace(/^### (.+)$/gm, '<h3 class="text-base font-bold text-gray-900 dark:text-white mt-4 mb-1">$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold text-primary-700 dark:text-primary-300 mt-5 mb-2 border-b border-gray-200 dark:border-gray-700 pb-1">$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold text-gray-900 dark:text-white mt-4 mb-3">$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/^[-*] (.+)$/gm, '<li class="ml-5 list-disc text-gray-700 dark:text-gray-300">$1</li>')
+      .replace(/^> (.+)$/gm, '<blockquote class="border-l-4 border-primary-400 pl-3 italic text-gray-600 dark:text-gray-400 my-2">$1</blockquote>')
+      .replace(/^---$/gm, '<hr class="border-gray-200 dark:border-gray-700 my-3"/>')
+      .replace(/\n/g, '<br/>');
+  };
+
+  const preview = note.content ? note.content.slice(0, 280) + (note.content.length > 280 ? '…' : '') : '';
+
+  return (
+    <div className="glass-card p-5 animate-fade-in hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="badge badge-primary text-xs">{note.subject || 'General'}</span>
+            <h3 className="font-semibold text-gray-900 dark:text-white">{note.topic || 'Untitled Note'}</h3>
+          </div>
+          <p className="text-xs text-gray-400 dark:text-gray-500">Generated {formatDate(note.createdAt)}</p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button onClick={() => setExpanded(!expanded)} className="btn-secondary py-1.5 px-3 text-xs">
+            {expanded ? '▲ Collapse' : '▼ Read Notes'}
+          </button>
+          <button onClick={onDelete} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title="Delete note">🗑️</button>
+        </div>
+      </div>
+
+      {!expanded && (
+        <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{preview}</p>
+      )}
+
+      {expanded && (
+        <div
+          className="mt-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed border-t border-gray-100 dark:border-gray-700 pt-3"
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(note.content || '') }}
+        />
       )}
     </div>
   );
