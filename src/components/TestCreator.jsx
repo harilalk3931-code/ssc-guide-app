@@ -102,11 +102,21 @@ export default function TestCreator() {
   const getQuestionsForSection = (sectionId) => {
     const section = SECTIONS.find((s) => s.id === sectionId);
     if (!section) return [];
-    return allQuestions.filter((q) => section.topicPrefixes.some((p) => q.topic === p || q.topic.startsWith(p + '-')));
+    return allQuestions.filter((q) => {
+      const qTopic = (q.topic || '').toLowerCase();
+      return section.topicPrefixes.some((p) => {
+        const pref = p.toLowerCase();
+        return qTopic === pref || qTopic.startsWith(pref + '-') || qTopic.includes(pref);
+      });
+    });
   };
 
   const findSectionForTopic = (topic) => {
-    return SECTIONS.find((s) => s.topicPrefixes.some((p) => topic === p || topic.startsWith(p + '-'))) || SECTIONS[0];
+    const qTopic = (topic || '').toLowerCase();
+    return SECTIONS.find((s) => s.topicPrefixes.some((p) => {
+      const pref = p.toLowerCase();
+      return qTopic === pref || qTopic.startsWith(pref + '-') || qTopic.includes(pref);
+    })) || SECTIONS[0];
   };
 
   const startTest = () => {
@@ -465,7 +475,7 @@ export default function TestCreator() {
                       <div>
                         <span className="text-sm text-gray-500 dark:text-gray-400">Question {currentQ + 1} of {testQuestions.length}</span>
                         <span className={`ml-2 badge text-xs ${q.difficulty === 'easy' ? 'bg-green-100 text-green-800' : q.difficulty === 'hard' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                          {q.difficulty?.charAt(0).toUpperCase() + q.difficulty?.slice(1) || 'Medium'}
+                          {typeof q.difficulty === 'string' && q.difficulty ? (q.difficulty.charAt(0).toUpperCase() + q.difficulty.slice(1)) : 'Medium'}
                         </span>
                       </div>
                     </div>
