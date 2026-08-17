@@ -672,10 +672,12 @@ export default function GuideNotes() {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiProgress, setAiProgress] = useState(null);
   const [showAiPanel, setShowAiPanel] = useState(false);
+  const [showPromptHelp, setShowPromptHelp] = useState(false);
   const [aiApiKeyInput, setAiApiKeyInput] = useState('');
   const [aiKeySaved, setAiKeySaved] = useState(false);
   const [savedKeys, setSavedKeys] = useState([]);
   const [activeKeyId, setActiveKeyId] = useState(null);
+  const [newKeyProvider, setNewKeyProvider] = useState('gemini');
   const [folderNotes, setFolderNotes] = useState(null); // subjects loaded from content/guide-notes
   const [notesSource, setNotesSource] = useState('builtin'); // 'builtin' | 'folder' | 'mixed'
   const [ttsSection, setTtsSection] = useState(null);
@@ -802,15 +804,13 @@ export default function GuideNotes() {
       alert('Enter a topic to generate notes for.');
       return;
     }
-    const apiKey = aiApiKeyInput.trim() || getActiveKey()?.key || '';
-    if (!apiKey) {
-      alert('Add your AI API key in the ⚙️ settings first.');
-      return;
-    }
-    if (aiApiKeyInput.trim()) {
-      // Save the new key into the shared multi-key storage
+
+    // Save user-typed key if provided
+    const typedKey = aiApiKeyInput.trim();
+    if (typedKey) {
       const keys = JSON.parse(localStorage.getItem('ai-keys') || '[]');
-      const entry = { id: crypto.randomUUID(), name: `${getProviderName(getActiveKey()?.provider || 'nemotron')} Key ${keys.length + 1}`, key: aiApiKeyInput.trim(), provider: getActiveKey()?.provider || 'nemotron' };
+      const providerForKey = newKeyProvider || getActiveKey()?.provider || 'nemotron';
+      const entry = { id: crypto.randomUUID(), name: `${getProviderName(providerForKey)} Key ${keys.length + 1}`, key: typedKey, provider: providerForKey };
       keys.push(entry);
       localStorage.setItem('ai-keys', JSON.stringify(keys));
       localStorage.setItem('ai-active-key', entry.id);
@@ -820,15 +820,18 @@ export default function GuideNotes() {
       setAiApiKeyInput('');
     }
 
+    // Use saved key from localStorage, or let server use its own env key
+    const apiKey = typedKey || getActiveKey()?.key || '';
+    const provider = getActiveKey()?.provider || 'nemotron';
+
     const noteKey = `ai-note-${selectedSubject}-${topic.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     setAiGenerating(true);
     setAiProgress({ label: `Generating detailed notes on "${topic}"...` });
     try {
-      const provider = getActiveKey()?.provider || 'nemotron';
       const response = await fetch('/api/ai/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subject: selectedSubject, topic, apiKey: getActiveKey()?.key || apiKey, provider }),
+        body: JSON.stringify({ subject: selectedSubject, topic, apiKey, provider }),
       });
       const data = await response.json();
       if (data.success) {
@@ -952,14 +955,34 @@ export default function GuideNotes() {
           {showAiPanel && (
             <div className="mt-4 p-4 bg-gray-50 dark:bg-dark-800/50 rounded-xl border border-gray-200 dark:border-gray-700 animate-slide-down">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="label-text">Topic</label>
-                  <input
-                    type="text"
+                <div className="sm:col-span-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="label-text">Prompt / Topic</label>
+                    <button
+                      onClick={() => setShowPromptHelp(!showPromptHelp)}
+                      className="text-xs font-medium text-primary-600 dark:text-primary-400 hover:underline flex items-center gap-1"
+                    >
+                      💡 {showPromptHelp ? 'Hide Help' : 'How to Prompt?'}
+                    </button>
+                  </div>
+                  
+                  {showPromptHelp && (
+                    <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800 text-sm text-blue-800 dark:text-blue-300">
+                      <p className="font-semibold mb-1">Tips for better generation:</p>
+                      <ul className="list-disc pl-5 space-y-1 text-xs">
+                        <li><strong>Specific topic:</strong> <em>"Fundamental Rights (Articles 12-35) with tricks to remember"</em></li>
+                        <li><strong>Format request:</strong> <em>"List all important battles of Mughal Empire in a table with years and winners"</em></li>
+                        <li><strong>Focus area:</strong> <em>"Percentage shortcuts for successive discount and profit/loss"</em></li>
+                      </ul>
+                    </div>
+                  )}
+
+                  <textarea
                     value={aiTopic}
                     onChange={(e) => setAiTopic(e.target.value)}
-                    placeholder={`e.g., ${selectedSubject === 'General Awareness' ? 'Indian Polity - Fundamental Rights' : 'Percentage - Shortcuts'}`}
-                    className="input-field"
+                    placeholder={`e.g., Explain the concept of Unit Digit and Divisibility Rules with examples...`}
+                    className="input-field min-h-[80px] py-2 resize-y"
+                    rows={3}
                   />
                 </div>
                 <div>
@@ -970,40 +993,66 @@ export default function GuideNotes() {
                     className="input-field"
                   >
                     {subjects.map((s) => (
-                      <option key={s} value={s}>{allSubjects[s].icon} {s}</option>
+                      <option key={s} value={s}>{(allSubjects[s]?.icon || '📘')} {s}</option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              <div className="mt-3">
-                <label className="label-text flex items-center gap-2">
-                  🔑 AI API Key
+              <div className="mt-3 p-4 bg-gray-50 dark:bg-dark-800/60 rounded-xl border border-gray-200 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="label-text text-sm font-semibold">🔑 AI API Key (Optional)</label>
                   {getActiveKey() ? (
-                    <span className="badge badge-success">Using "{getActiveKey().name}" ({getProviderName(getActiveKey().provider)})</span>
-                  ) : savedAiKey ? (
-                    <span className="badge badge-success">Saved on device ✓</span>
-                  ) : null}
-                </label>
-                <div className="flex flex-col sm:flex-row gap-3">
+                    <span className="badge badge-success text-xs">✓ {getActiveKey().name} ({getProviderName(getActiveKey().provider)})</span>
+                  ) : (
+                    <span className="badge text-xs bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">⚡ Using server key (no input needed)</span>
+                  )}
+                </div>
+
+                {/* Provider quick links */}
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {[
+                    { name: 'Gemini (Free)', url: 'https://aistudio.google.com/apikey', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+                    { name: 'Groq (Free)', url: 'https://console.groq.com/keys', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300' },
+                    { name: 'Nemotron (Free)', url: 'https://build.nvidia.com/explore/discover', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' },
+                  ].map((p) => (
+                    <a key={p.name} href={p.url} target="_blank" rel="noopener noreferrer"
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition-opacity hover:opacity-80 ${p.color}`}>
+                      🔗 Get {p.name} Key
+                    </a>
+                  ))}
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    value={newKeyProvider || 'gemini'}
+                    onChange={(e) => setNewKeyProvider(e.target.value)}
+                    className="input-field py-2 text-sm w-auto min-w-[150px]"
+                  >
+                    <option value="gemini">Google Gemini</option>
+                    <option value="groq">Groq (Llama)</option>
+                    <option value="nemotron">NVIDIA Nemotron</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
                   <input
                     type="password"
                     value={aiApiKeyInput}
                     onChange={(e) => setAiApiKeyInput(e.target.value)}
-                    placeholder={savedAiKey ? 'Key already saved (leave blank to reuse)' : 'Enter a new key to save...'}
-                    className="input-field flex-1"
+                    placeholder="Paste API key here to save & use it..."
+                    className="input-field flex-1 text-sm"
                     autoComplete="off"
                   />
                   <button
                     onClick={generateAiNotes}
                     disabled={aiGenerating}
-                    className="btn-primary py-2 px-5 whitespace-nowrap"
+                    className="btn-primary py-2 px-5 whitespace-nowrap text-sm"
                   >
-                    {aiGenerating ? 'Generating...' : '🚀 Generate Detailed Notes'}
+                    {aiGenerating ? '⏳ Generating...' : '🚀 Generate Notes'}
                   </button>
                 </div>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-                  🔒 Keys are saved only on your device and sent directly to the AI provider. Manage multiple named keys (add / remove / switch) in the Question Bank ⚙️ settings — the active key is reused here. {aiKeySaved && <span className="text-green-600 font-medium">Key saved!</span>}
+                  💡 Leave the key field blank to use the built-in server key. Adding your own key gives you faster, prioritized generation.
+                  {aiKeySaved && <span className="ml-2 text-green-600 dark:text-green-400 font-medium">✓ Key saved!</span>}
                 </p>
               </div>
 
@@ -1087,8 +1136,8 @@ export default function GuideNotes() {
                   aria-expanded={isExpanded}
                 >
                   <div className="flex items-center gap-3 flex-1">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br {subjectData.color}">
-                      <span className="text-lg">{subjectData.icon}</span>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br ${subjectData?.color || 'from-blue-500 to-cyan-500'}`}>
+                      <span className="text-lg">{subjectData?.icon || '📘'}</span>
                     </div>
                     <h3 className="font-semibold text-gray-900 dark:text-white">{section.title}</h3>
                   </div>
